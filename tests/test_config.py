@@ -1,4 +1,22 @@
+import pytest
+from pydantic import ValidationError
+
 from personal_hermes.config import Settings
+
+
+REQUIRED_ENV = {
+    "TELEGRAM_BOT_TOKEN": "test-telegram-token",
+    "TELEGRAM_AUTHORIZED_CHAT_ID": "123456",
+    "TELEGRAM_AUTHORIZED_USER_ID": "789012",
+    "OPENCLAW_API_KEY": "test-openclaw-key",
+    "OPENCLAW_BASE_URL": "https://api.example.test",
+    "SQLITE_DATABASE_PATH": "var/test.sqlite3",
+}
+
+
+def set_required_env(monkeypatch):
+    for key, value in REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
 
 
 def test_settings_defaults(monkeypatch):
@@ -9,22 +27,71 @@ def test_settings_defaults(monkeypatch):
         "DAILY_AGENDA_TIME",
         "REMINDER_LEAD_MINUTES",
         "PENDING_REPLY_EXPIRY_DAYS",
+        "WORKDAY_START",
+        "WORKDAY_END",
+        "MIN_FREE_BLOCK_MINUTES",
+        "TELEGRAM_POLL_INTERVAL_SECONDS",
+        "DEBUG_EMAIL_BODY_LOGGING",
     ]
     for key in default_keys:
         monkeypatch.delenv(key, raising=False)
 
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-telegram-token")
-    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_ID", "123456")
-    monkeypatch.setenv("TELEGRAM_AUTHORIZED_USER_ID", "789012")
-    monkeypatch.setenv("OPENCLAW_API_KEY", "test-openclaw-key")
-    monkeypatch.setenv("OPENCLAW_BASE_URL", "https://api.example.test")
-    monkeypatch.setenv("SQLITE_DATABASE_PATH", "var/test.sqlite3")
+    set_required_env(monkeypatch)
 
     settings = Settings(_env_file=None)
 
     assert settings.timezone == "Asia/Manila"
+    assert settings.workday_start == "09:00"
+    assert settings.workday_end == "17:00"
+    assert settings.min_free_block_minutes == 120
+    assert settings.telegram_poll_interval_seconds == 2
     assert settings.gmail_poll_interval_seconds == 300
     assert settings.calendar_poll_interval_seconds == 300
     assert settings.daily_agenda_time == "08:00"
     assert settings.reminder_lead_minutes == 30
     assert settings.pending_reply_expiry_days == 7
+    assert settings.debug_email_body_logging is False
+
+
+def test_openclaw_base_url_must_be_valid_url(monkeypatch):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("OPENCLAW_BASE_URL", "not-a-url")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "WORKDAY_START",
+        "WORKDAY_END",
+        "DAILY_AGENDA_TIME",
+    ],
+)
+def test_time_settings_must_use_hh_mm_format(monkeypatch, key):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv(key, "25:99")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "MIN_FREE_BLOCK_MINUTES",
+        "TELEGRAM_POLL_INTERVAL_SECONDS",
+        "GMAIL_POLL_INTERVAL_SECONDS",
+        "CALENDAR_POLL_INTERVAL_SECONDS",
+        "REMINDER_LEAD_MINUTES",
+        "PENDING_REPLY_EXPIRY_DAYS",
+    ],
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_interval_and_count_settings_must_be_positive(monkeypatch, key, value):
+    set_required_env(monkeypatch)
+    monkeypatch.setenv(key, value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
