@@ -50,19 +50,8 @@ class OpenClawClient:
 
     def send_thread_reply(self, request: SendEmailReplyRequest) -> str:
         payload = self._run(
-            self._send_reply_args(),
-            input_text=json.dumps(
-                {
-                    "thread_id": request.thread_id,
-                    "to": list(request.to),
-                    "cc": list(request.cc),
-                    "bcc": list(request.bcc),
-                    "subject": request.subject,
-                    "body_text": request.body_text,
-                    "in_reply_to": request.in_reply_to,
-                    "references": list(request.references),
-                }
-            ),
+            self._send_reply_args(request),
+            input_text=request.body_text,
         )
         if not isinstance(payload, dict) or not payload.get("id"):
             raise OpenClawCommandError("gog reply returned no sent message id")
@@ -84,45 +73,70 @@ class OpenClawClient:
         return self._command_runner(args, input_text=input_text)
 
     def _list_inbox_args(self, since_cursor: str | None) -> list[str]:
-        args = [
+        query = "in:inbox"
+        if since_cursor:
+            query = f"{query} {since_cursor}"
+
+        return [
             self._executable,
             "gmail",
             "messages",
-            "list",
-            "--inbox",
-            "--unread",
-            "--format",
-            "json",
-            "--limit",
+            "search",
+            query,
+            "--json",
+            "--max",
             str(self._inbox_limit),
+            "--include-body",
+            "--body-format",
+            "text",
+            "--no-input",
         ]
-        if since_cursor:
-            args.extend(["--since", since_cursor])
-        return args
 
     def _get_email_args(self, email_id: str) -> list[str]:
         return [
             self._executable,
             "gmail",
-            "messages",
             "get",
             email_id,
             "--format",
-            "json",
+            "full",
+            "--sanitize-content",
+            "--json",
+            "--no-input",
         ]
 
-    def _send_reply_args(self) -> list[str]:
-        return [self._executable, "gmail", "messages", "reply", "--format", "json"]
+    def _send_reply_args(self, request: SendEmailReplyRequest) -> list[str]:
+        args = [
+            self._executable,
+            "gmail",
+            "send",
+            "--thread-id",
+            request.thread_id,
+            "--to",
+            ",".join(request.to),
+            "--subject",
+            request.subject,
+            "--body-file",
+            "-",
+            "--json",
+            "--no-input",
+        ]
+        if request.cc:
+            args.extend(["--cc", ",".join(request.cc)])
+        if request.bcc:
+            args.extend(["--bcc", ",".join(request.bcc)])
+        if request.in_reply_to:
+            args.extend(["--reply-to-message-id", request.in_reply_to])
+        return args
 
     def _mark_email_read_args(self, email_id: str) -> list[str]:
         return [
             self._executable,
             "gmail",
-            "messages",
             "mark-read",
             email_id,
-            "--format",
-            "json",
+            "--json",
+            "--no-input",
         ]
 
     def _list_calendar_events_args(
@@ -132,13 +146,14 @@ class OpenClawClient:
             self._executable,
             "calendar",
             "events",
-            "list",
-            "--format",
-            "json",
-            "--start",
+            "primary",
+            "--from",
             start_at.isoformat(),
-            "--end",
+            "--to",
             end_at.isoformat(),
+            "--json",
+            "--all-pages",
+            "--no-input",
         ]
 
     @staticmethod
@@ -175,7 +190,7 @@ class OpenClawClient:
     def _items(payload: JsonValue, key: str) -> list[dict[str, Any]]:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
-        value = payload.get(key) or payload.get("items") or []
+        value = payload.get(key) or payload.get("items") or payload.get("results") or []
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
         return []

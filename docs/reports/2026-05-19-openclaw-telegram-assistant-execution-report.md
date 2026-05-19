@@ -8,9 +8,9 @@ No GitHub push was performed.
 
 ## Summary
 
-Implementation started from the approved design and phase plan. Phase 0 was completed and approved after review fixes. Phase 1 produced useful OpenClaw boundary code and tests, but it is not fully approved because the local server does not currently have the OpenClaw Google Workspace `gog` CLI available, so exact runtime command grammar and auth behavior cannot be verified.
+Implementation started from the approved design and phase plan. Phase 0 was completed and approved after review fixes. Phase 1 produced useful OpenClaw boundary code and tests. After the initial report, the OpenClaw Google Workspace `gog` capability was installed and the adapter contract was updated from local `gog --help` output.
 
-Work stopped at the Phase 1 gate to avoid building later Gmail/Calendar behavior on an unverified OpenClaw runtime contract.
+Work remains blocked from real Gmail/Calendar smoke testing until OAuth credentials and the target Google account are configured in `gog`.
 
 ## Achieved
 
@@ -55,12 +55,13 @@ Review result:
 
 ### Phase 1: OpenClaw Boundary Investigation And Adapter Draft
 
-Partially implemented, not fully approved.
+Partially implemented, pending OAuth credential verification.
 
 Commits:
 
 - `a77a024 feat: add OpenClaw client contract`
 - `ee4a1c4 fix: use gog cli adapter for openclaw phase 1`
+- pending current changes: installed `gog` locally and updated command contract from verified help output
 
 Implemented:
 
@@ -70,13 +71,17 @@ Implemented:
   - `CalendarEvent`
   - `SendEmailReplyRequest`
 - `OpenClawClient` wrapper that isolates Gmail/Calendar operations behind the planned method signatures.
-- A command-runner based adapter intended to call OpenClaw's Google Workspace `gog` CLI.
+- A command-runner based adapter for OpenClaw's Google Workspace `gog` CLI.
 - Mocked contract tests for mapping JSON dictionaries into internal types and constructing command arguments.
+- Installed `gog` v0.17.0 to `~/.local/bin/gog`.
+- Installed the OpenClaw `gog` skill wrapper to `~/.openclaw/plugin-skills/gog`.
+- Verified local command grammar with `gog --help`, `gog gmail messages search --help`, `gog gmail get --help`, `gog gmail send --help`, `gog gmail mark-read --help`, and `gog calendar events --help`.
 
 Current review result:
 
 - Tests pass.
-- Spec compliance did not pass because exact `gog` command grammar, auth method, and runtime response behavior could not be verified locally.
+- Exact command grammar is now locally verified.
+- Runtime auth behavior is not verified because `gog` has no OAuth credentials configured yet.
 
 ## Verification Performed
 
@@ -86,9 +91,19 @@ Fresh verification command:
 . .venv/bin/activate && python -m pytest -v
 ```
 
-Result:
+Original result:
 
 - `22 passed in 0.31s`
+
+Post-install verification:
+
+```bash
+. .venv/bin/activate && python -m pytest tests/openclaw/test_client_contract.py -v
+```
+
+Result:
+
+- `5 passed in 0.04s`
 
 Runtime dependency check:
 
@@ -96,9 +111,23 @@ Runtime dependency check:
 command -v gog || true
 ```
 
+Original result:
+
+- No path returned.
+
+Post-install result:
+
+```bash
+command -v gog
+gog --version
+gog auth status --json --no-input
+```
+
 Result:
 
-- No path returned. `gog` is not currently installed or available on `PATH`.
+- `gog` is available at `/home/claude-team/.local/bin/gog`.
+- Version: `v0.17.0 (aee7460 2026-05-15T18:10:07Z)`.
+- `gog` config does not exist yet and no account credentials are configured.
 
 Git state check:
 
@@ -106,7 +135,7 @@ Git state check:
 git log --oneline --decorate -12
 ```
 
-Current head:
+Original head at report creation:
 
 - `ee4a1c4 (HEAD -> implementation/openclaw-telegram-assistant) fix: use gog cli adapter for openclaw phase 1`
 
@@ -114,23 +143,20 @@ Current head:
 
 ### Critical Blocker
 
-OpenClaw Google Workspace runtime is not confirmed.
+OpenClaw Google Workspace OAuth is not configured.
 
 Missing:
 
-- A locally available `gog` CLI or equivalent OpenClaw Google Workspace execution surface.
-- `gog --help` output or official command reference that confirms exact subcommands and JSON formats for:
-  - Gmail inbox listing,
-  - Gmail message retrieval,
-  - Gmail thread reply sending,
-  - Gmail mark-read,
-  - Calendar event listing.
-- Confirmed auth behavior for the local server environment.
+- Google OAuth client credentials.
+- `gog auth credentials set <credentials>` completed with the OAuth client file.
+- `gog auth add <email> --services gmail,calendar` completed for the target account.
+- `gog auth doctor --check` passing.
+- Real smoke checks for Gmail search/get/mark-read/send and Calendar event listing.
 
 Impact:
 
-- Phase 1 cannot be fully approved.
-- Phases 2 onward can be designed and tested against internal interfaces, but real Gmail/Calendar functionality would remain unproven until `gog` is installed/configured and the adapter is verified.
+- Phase 1 command grammar is no longer blocked by a missing binary.
+- Real Gmail/Calendar functionality remains unproven until OAuth is configured.
 
 ### Not Yet Implemented
 
@@ -150,12 +176,12 @@ The following planned phases have not been implemented:
 
 ## Recommended Next Step
 
-Install or expose OpenClaw's Google Workspace `gog` capability on this server, then run:
+Configure OAuth for the target Google account:
 
 ```bash
-command -v gog
-gog --help
+gog auth credentials set /path/to/client_secret.json
+gog auth add you@gmail.com --services gmail,calendar
+gog auth doctor --check
 ```
 
-After that, update `docs/openclaw-api-notes.md`, `OpenClawClient`, and its contract tests with the exact verified command grammar. Once Phase 1 passes spec compliance, continue with Phase 2.
-
+After OAuth is configured, run controlled smoke tests and then continue with Phase 2.

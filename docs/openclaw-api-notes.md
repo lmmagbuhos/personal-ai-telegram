@@ -19,12 +19,33 @@ References checked:
 
 ## Local Runtime Status
 
-`gog` is not currently installed on `PATH` in this environment. Because of that,
-real credential and smoke testing is blocked until the OpenClaw Google Workspace
-skill and its `gog` CLI are installed and configured here.
+`gog` v0.17.0 is installed on `PATH` in this environment:
 
-Do not treat the Phase 1 adapter as runtime-complete until `gog --help` and the
-exact Gmail/Calendar subcommands can be verified locally.
+```text
+v0.17.0 (aee7460 2026-05-15T18:10:07Z)
+```
+
+The executable was installed from the upstream `openclaw/gogcli` Linux amd64
+release. The archive checksum was verified against the release digest before
+installing the binary to `~/.local/bin/gog`.
+
+Credentials are not configured yet. `gog auth status --json --no-input` reports:
+
+```json
+{
+  "config": {
+    "exists": false,
+    "path": "/home/claude-team/.config/gogcli/config.json"
+  },
+  "account": {
+    "credentials_exists": false,
+    "email": ""
+  }
+}
+```
+
+Real Gmail/Calendar smoke testing remains blocked until OAuth credentials and the
+target Google account are configured.
 
 ## Adapter Boundary
 
@@ -48,32 +69,32 @@ uses `subprocess.run(...)` without `shell=True`, captures stdout, and parses JSO
 Tests inject a fake runner so command construction and JSON mapping remain
 maintainable without requiring local OpenClaw credentials.
 
-## Conservative CLI Contract
+## Verified CLI Contract
 
-The exact `gog` command grammar has not been verified locally because the binary is
-missing. Phase 1 therefore uses conservative, isolated command names that should be
-confirmed or adjusted after `gog --help` is available:
+The following command grammar was verified locally with `gog --help` on v0.17.0:
 
-- `gog gmail messages list --inbox --unread --format json --limit 25 [--since <cursor>]`
-- `gog gmail messages get <email-id> --format json`
-- `gog gmail messages reply --format json`
-- `gog gmail messages mark-read <email-id> --format json`
-- `gog calendar events list --format json --start <iso-datetime> --end <iso-datetime>`
+- Gmail message search:
+  - `gog gmail messages search <query> --json --max <n> --no-input`
+  - Optional content flags: `--include-body`, `--body-format text`, `--full`.
+- Gmail message get:
+  - `gog gmail get <messageId> --format full --sanitize-content --json --no-input`
+- Gmail send reply:
+  - `gog gmail send --thread-id <threadId> --to <recipients> --subject <subject> --body-file - --json --no-input`
+  - Optional flags used when present: `--cc`, `--bcc`, `--reply-to-message-id`.
+- Gmail mark read:
+  - `gog gmail mark-read <messageId> --json --no-input`
+- Calendar event listing:
+  - `gog calendar events primary --from <iso-datetime> --to <iso-datetime> --json --all-pages --no-input`
 
-Reply sending passes a structured JSON document to stdin with:
+Reply sending passes the plain-text reply body to stdin because `gog gmail send`
+supports `--body-file -`.
 
-- `thread_id`
-- `to`
-- `cc`
-- `bcc`
-- `subject`
-- `body_text`
-- `in_reply_to`
-- `references`
+Authentication and setup commands were also verified from help output:
 
-If installed `gog` uses different subcommands or payload field names, update only
-`OpenClawClient` command construction and mapping helpers. The rest of the project
-should continue to use the internal dataclasses.
+- `gog auth credentials set <credentials>`
+- `gog auth add <email> --services gmail,calendar`
+- `gog auth list`
+- `gog auth doctor --check`
 
 ## Mapping Expectations
 

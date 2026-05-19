@@ -1,4 +1,3 @@
-import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -45,7 +44,7 @@ def test_list_new_inbox_messages_invokes_gog_and_maps_messages():
     )
     client = OpenClawClient(command_runner=runner)
 
-    messages = client.list_new_inbox_messages(since_cursor="2026-05-18T00:00:00Z")
+    messages = client.list_new_inbox_messages(since_cursor="after:2026/05/18")
 
     assert runner.calls == [
         (
@@ -53,15 +52,15 @@ def test_list_new_inbox_messages_invokes_gog_and_maps_messages():
                 "gog",
                 "gmail",
                 "messages",
-                "list",
-                "--inbox",
-                "--unread",
-                "--format",
-                "json",
-                "--limit",
+                "search",
+                "in:inbox after:2026/05/18",
+                "--json",
+                "--max",
                 "25",
-                "--since",
-                "2026-05-18T00:00:00Z",
+                "--include-body",
+                "--body-format",
+                "text",
+                "--no-input",
             ],
             None,
         )
@@ -109,7 +108,17 @@ def test_get_email_message_invokes_gog_and_accepts_camel_case_fields():
 
     assert runner.calls == [
         (
-            ["gog", "gmail", "messages", "get", "msg-1", "--format", "json"],
+            [
+                "gog",
+                "gmail",
+                "get",
+                "msg-1",
+                "--format",
+                "full",
+                "--sanitize-content",
+                "--json",
+                "--no-input",
+            ],
             None,
         )
     ]
@@ -151,22 +160,25 @@ def test_send_thread_reply_invokes_gog_with_structured_json_input():
     assert runner.calls[0][0] == [
         "gog",
         "gmail",
-        "messages",
-        "reply",
-        "--format",
-        "json",
+        "send",
+        "--thread-id",
+        "thread-1",
+        "--to",
+        "alex@example.com",
+        "--subject",
+        "Project update",
+        "--body-file",
+        "-",
+        "--json",
+        "--no-input",
+        "--cc",
+        "ops@example.com",
+        "--bcc",
+        "audit@example.com",
+        "--reply-to-message-id",
+        "<source-message@example.com>",
     ]
-    assert runner.calls[0][1] is not None
-    assert json.loads(runner.calls[0][1]) == {
-        "thread_id": "thread-1",
-        "to": ["alex@example.com"],
-        "cc": ["ops@example.com"],
-        "bcc": ["audit@example.com"],
-        "subject": "Project update",
-        "body_text": "Tomorrow works for me.",
-        "in_reply_to": "<source-message@example.com>",
-        "references": ["<previous-message@example.com>", "<source-message@example.com>"],
-    }
+    assert runner.calls[0][1] == "Tomorrow works for me."
 
 
 def test_mark_email_read_invokes_gog_command():
@@ -179,11 +191,10 @@ def test_mark_email_read_invokes_gog_command():
             [
                 "gog",
                 "gmail",
-                "messages",
                 "mark-read",
                 "msg-1",
-                "--format",
-                "json",
+                "--json",
+                "--no-input",
             ],
             None,
         )
@@ -236,13 +247,14 @@ def test_list_calendar_events_invokes_gog_and_maps_events():
                 "gog",
                 "calendar",
                 "events",
-                "list",
-                "--format",
-                "json",
-                "--start",
+                "primary",
+                "--from",
                 "2026-05-19T00:00:00+00:00",
-                "--end",
+                "--to",
                 "2026-05-20T00:00:00+00:00",
+                "--json",
+                "--all-pages",
+                "--no-input",
             ],
             None,
         )
