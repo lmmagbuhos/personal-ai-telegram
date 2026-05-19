@@ -1,12 +1,16 @@
 from datetime import datetime
+from email.utils import getaddresses
 from typing import Protocol
 
-from personal_hermes.openclaw.types import SendEmailReplyRequest
+from personal_hermes.openclaw.types import EmailMessage, SendEmailReplyRequest
 from personal_hermes.storage.store import StateStore
 from personal_hermes.telegram.types import TelegramCallback
 
 
 class ReplyClient(Protocol):
+    def get_email_message(self, email_id: str) -> EmailMessage:
+        ...
+
     def send_thread_reply(self, request: SendEmailReplyRequest) -> str:
         ...
 
@@ -74,21 +78,23 @@ class MailActionService:
             self._answer_no_pending(callback)
             return
 
+        source_message = self.openclaw_client.get_email_message(pending.email_id)
         self.openclaw_client.send_thread_reply(
             SendEmailReplyRequest(
                 thread_id=pending.thread_id,
-                to=(),
-                subject="",
+                to=_reply_recipients(source_message.sender),
+                subject=_reply_subject(source_message.subject),
                 body_text=pending.reply_text,
-                in_reply_to=pending.email_id,
+                in_reply_to=source_message.message_id or pending.email_id,
+                references=source_message.references,
             )
         )
         self.store.mark_pending_reply_sent(pending_reply_id, sent_at=now)
         self.store.record_reply_audit(
             email_id=pending.email_id,
             thread_id=pending.thread_id,
-            recipient="",
-            subject="",
+            recipient=", ".join(_reply_recipients(source_message.sender)),
+            subject=_reply_subject(source_message.subject),
             telegram_user_id=callback.user_id,
             telegram_action_id=callback.callback_query_id,
             sent_at=now,
@@ -123,3 +129,18 @@ class MailActionService:
             callback_query_id=callback.callback_query_id,
             text="Reply is no longer pending",
         )
+
+
+def _reply_recipients(sender: str) -> tuple[str, ...]:
+    addresses = tuple(
+        address
+        for _name, address in getaddresses([sender])
+        if address
+    )
+    return addresses or (sender,)
+
+
+def _reply_subject(subject: str) -> str:
+    if subject.lower().startswith("re:"):
+        return subject
+    return f"Re: {subject}"

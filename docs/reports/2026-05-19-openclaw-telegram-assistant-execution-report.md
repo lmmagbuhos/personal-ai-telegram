@@ -8,7 +8,7 @@ No GitHub push was performed.
 
 ## Summary
 
-Implementation started from the approved design and phase plan. The app now has the main single-user pipeline pieces in place: OpenClaw `gog` access, SQLite state, Telegram polling adapter, Gmail notifications with inline reply actions, calendar availability, daily agenda/reminder jobs, assistant routing, scheduler jobs, and the app entrypoint/runtime wiring.
+Implementation started from the approved design and phase plan. The app now has the main single-user pipeline pieces in place: OpenClaw `gog` access, SQLite state, Telegram polling adapter, Gmail notifications with inline reply actions, calendar availability, daily agenda/reminder jobs, assistant routing, scheduler jobs, app entrypoint/runtime wiring, and mocked end-to-end dry-run coverage.
 
 OAuth for `lmmagbuhos@oakdriveventures.com` is configured in `gog`, and read-only Gmail and Calendar smoke checks have passed. No GitHub push was performed.
 
@@ -100,6 +100,7 @@ Implemented:
   - edit suggested reply in Telegram,
   - ignore,
   - mark read.
+- Reply sending now reloads the source email before sending so the Gmail reply has a recipient, `Re:` subject, and source message-id.
 - Assistant router connecting Telegram messages/callbacks to calendar and email actions.
 - Scheduler job coordinator for one-shot Gmail polling, Telegram polling, daily agenda, and calendar reminders.
 - App entrypoint/runtime wiring:
@@ -107,6 +108,13 @@ Implemented:
   - `python -m personal_hermes --run`
   - APScheduler registration for Telegram polling, Gmail polling, calendar reminder polling, and daily agenda cron.
 - Optional `GOG_ACCOUNT` and `GOG_CLIENT` settings are now passed through to `gog` commands as global flags.
+- Mocked end-to-end dry run:
+  - Telegram calendar question to availability response.
+  - Gmail poll to Telegram notification.
+  - Telegram send-reply callback to `gog gmail send`.
+  - Telegram edit flow to edited Gmail reply.
+  - Calendar reminder poll to Telegram reminder.
+  - `scripts/run_local_dry_run.py`.
 
 ## Verification Performed
 
@@ -138,7 +146,21 @@ Current full-suite verification:
 
 Result:
 
-- `79 passed in 3.00s`
+- `83 passed in 2.68s`
+
+Current local dry-run script:
+
+```bash
+. .venv/bin/activate && python scripts/run_local_dry_run.py
+```
+
+Result:
+
+- `Local dry run completed`
+- `telegram_messages=5`
+- `edited_messages=1`
+- `answered_callbacks=1`
+- `sent_replies=1`
 
 Current app config smoke:
 
@@ -201,7 +223,7 @@ Original head at report creation:
 - Telegram bot token/chat/user live smoke test.
 - Controlled live send-reply test through Gmail.
 - Controlled live mark-read test through Gmail.
-- Full end-to-end dry run with real Telegram updates and real Gmail/Calendar data.
+- Full end-to-end smoke with real Telegram updates and real Gmail/Calendar data.
 - Server runbook/service manager configuration for keeping `python -m personal_hermes --run` alive.
 - Production logging/error reporting policy.
 

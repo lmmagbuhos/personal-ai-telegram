@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from personal_hermes.mail.actions import MailActionService
-from personal_hermes.openclaw.types import SendEmailReplyRequest
+from personal_hermes.openclaw.types import EmailMessage, SendEmailReplyRequest
 from personal_hermes.storage.store import StateStore
 from personal_hermes.telegram.types import TelegramCallback
 
@@ -10,6 +10,21 @@ class FakeOpenClawClient:
     def __init__(self) -> None:
         self.sent_replies: list[SendEmailReplyRequest] = []
         self.marked_read: list[str] = []
+
+    def get_email_message(self, email_id: str) -> EmailMessage:
+        return EmailMessage(
+            id=email_id,
+            thread_id="thread-1",
+            subject="Project update",
+            sender="Alex Sender <alex@example.com>",
+            to=("Hermes User <me@example.com>",),
+            cc=(),
+            sent_at=datetime(2026, 5, 19, 8, 0, tzinfo=UTC),
+            snippet="Can we meet?",
+            body_text="Can we meet?",
+            is_unread=True,
+            message_id="<msg-1@example.com>",
+        )
 
     def send_thread_reply(self, request: SendEmailReplyRequest) -> str:
         self.sent_replies.append(request)
@@ -84,10 +99,10 @@ def test_send_reply_sends_pending_reply_once_and_audits(tmp_path):
     assert openclaw.sent_replies == [
         SendEmailReplyRequest(
             thread_id="thread-1",
-            to=(),
-            subject="",
+            to=("alex@example.com",),
+            subject="Re: Project update",
             body_text="Suggested reply",
-            in_reply_to="msg-1",
+            in_reply_to="<msg-1@example.com>",
         )
     ]
     assert store.get_pending_reply(pending_id).status == "sent"
@@ -146,4 +161,3 @@ def test_mark_read_calls_openclaw_and_updates_telegram():
 
     assert openclaw.marked_read == ["msg-1"]
     assert telegram.answers == [{"callback_query_id": "callback-1", "text": "Marked read"}]
-
