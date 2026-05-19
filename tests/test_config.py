@@ -33,6 +33,17 @@ def test_settings_defaults(monkeypatch):
         "GOG_EXECUTABLE",
         "GOG_ACCOUNT",
         "GOG_CLIENT",
+        "MULTIUSER_ENABLED",
+        "PUBLIC_BASE_URL",
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "GOOGLE_OAUTH_REDIRECT_PATH",
+        "TOKEN_ENCRYPTION_KEY",
+        "INVITE_ONLY",
+        "INVITED_TELEGRAM_USER_IDS",
+        "OAUTH_SESSION_TTL_MINUTES",
+        "OAUTH_HOST",
+        "OAUTH_PORT",
     ]
     for key in default_keys:
         monkeypatch.delenv(key, raising=False)
@@ -55,6 +66,43 @@ def test_settings_defaults(monkeypatch):
     assert settings.gog_executable == "gog"
     assert settings.gog_account is None
     assert settings.gog_client is None
+    assert settings.multiuser_enabled is False
+    assert settings.public_base_url is None
+    assert settings.google_oauth_client_id is None
+    assert settings.google_oauth_client_secret is None
+    assert settings.google_oauth_redirect_path == "/oauth/google/callback"
+    assert settings.google_oauth_redirect_url is None
+    assert settings.token_encryption_key is None
+    assert settings.invite_only is True
+    assert settings.invited_telegram_user_ids == ""
+    assert settings.invited_telegram_user_ids_tuple == ()
+    assert settings.oauth_session_ttl_minutes == 15
+    assert settings.oauth_host == "127.0.0.1"
+    assert settings.oauth_port == 8080
+
+
+def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_ID", "123")
+    monkeypatch.setenv("TELEGRAM_AUTHORIZED_USER_ID", "456")
+    monkeypatch.setenv("SQLITE_DATABASE_PATH", "/tmp/hermes.sqlite3")
+    monkeypatch.setenv("MULTIUSER_ENABLED", "true")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://hermes.example.com")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "a" * 44)
+    monkeypatch.setenv("INVITE_ONLY", "true")
+    monkeypatch.setenv("INVITED_TELEGRAM_USER_IDS", "111,222")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.multiuser_enabled is True
+    assert settings.public_base_url == "https://hermes.example.com"
+    assert (
+        settings.google_oauth_redirect_url
+        == "https://hermes.example.com/oauth/google/callback"
+    )
+    assert settings.invited_telegram_user_ids_tuple == (111, 222)
 
 
 def test_settings_do_not_require_openclaw_rest_credentials(monkeypatch):

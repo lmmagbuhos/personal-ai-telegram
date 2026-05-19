@@ -27,6 +27,32 @@ class Settings(BaseSettings):
     reminder_lead_minutes: PositiveInt = 30
     pending_reply_expiry_days: PositiveInt = 7
     debug_email_body_logging: bool = False
+    multiuser_enabled: bool = False
+    public_base_url: str | None = None
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_redirect_path: str = "/oauth/google/callback"
+    token_encryption_key: str | None = None
+    invite_only: bool = True
+    invited_telegram_user_ids: str = ""
+    oauth_session_ttl_minutes: PositiveInt = 15
+    oauth_host: str = "127.0.0.1"
+    oauth_port: PositiveInt = 8080
+
+    @property
+    def google_oauth_redirect_url(self) -> str | None:
+        if not self.public_base_url:
+            return None
+        return self.public_base_url.rstrip("/") + self.google_oauth_redirect_path
+
+    @property
+    def invited_telegram_user_ids_tuple(self) -> tuple[int, ...]:
+        values: list[int] = []
+        for raw in self.invited_telegram_user_ids.split(","):
+            raw = raw.strip()
+            if raw:
+                values.append(int(raw))
+        return tuple(values)
 
     @field_validator("workday_start", "workday_end", "daily_agenda_time")
     @classmethod
