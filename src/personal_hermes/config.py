@@ -54,6 +54,22 @@ class Settings(BaseSettings):
                 values.append(int(raw))
         return tuple(values)
 
+    @field_validator("google_oauth_redirect_path")
+    @classmethod
+    def validate_google_oauth_redirect_path(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("google_oauth_redirect_path must start with /")
+        return value
+
+    @field_validator("invited_telegram_user_ids")
+    @classmethod
+    def validate_invited_telegram_user_ids(cls, value: str) -> str:
+        for raw in value.split(","):
+            raw = raw.strip()
+            if raw:
+                int(raw)
+        return value
+
     @field_validator("workday_start", "workday_end", "daily_agenda_time")
     @classmethod
     def validate_hh_mm(cls, value: str) -> str:
@@ -65,5 +81,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="ignore",
     )

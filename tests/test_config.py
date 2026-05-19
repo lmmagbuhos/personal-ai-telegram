@@ -12,42 +12,47 @@ REQUIRED_ENV = {
 }
 
 
+OPTIONAL_ENV_KEYS = [
+    "TIMEZONE",
+    "GMAIL_POLL_INTERVAL_SECONDS",
+    "CALENDAR_POLL_INTERVAL_SECONDS",
+    "DAILY_AGENDA_TIME",
+    "REMINDER_LEAD_MINUTES",
+    "PENDING_REPLY_EXPIRY_DAYS",
+    "WORKDAY_START",
+    "WORKDAY_END",
+    "MIN_FREE_BLOCK_MINUTES",
+    "TELEGRAM_POLL_INTERVAL_SECONDS",
+    "DEBUG_EMAIL_BODY_LOGGING",
+    "GOG_EXECUTABLE",
+    "GOG_ACCOUNT",
+    "GOG_CLIENT",
+    "MULTIUSER_ENABLED",
+    "PUBLIC_BASE_URL",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GOOGLE_OAUTH_REDIRECT_PATH",
+    "TOKEN_ENCRYPTION_KEY",
+    "INVITE_ONLY",
+    "INVITED_TELEGRAM_USER_IDS",
+    "OAUTH_SESSION_TTL_MINUTES",
+    "OAUTH_HOST",
+    "OAUTH_PORT",
+]
+
+
 def set_required_env(monkeypatch):
     for key, value in REQUIRED_ENV.items():
         monkeypatch.setenv(key, value)
 
 
-def test_settings_defaults(monkeypatch):
-    default_keys = [
-        "TIMEZONE",
-        "GMAIL_POLL_INTERVAL_SECONDS",
-        "CALENDAR_POLL_INTERVAL_SECONDS",
-        "DAILY_AGENDA_TIME",
-        "REMINDER_LEAD_MINUTES",
-        "PENDING_REPLY_EXPIRY_DAYS",
-        "WORKDAY_START",
-        "WORKDAY_END",
-        "MIN_FREE_BLOCK_MINUTES",
-        "TELEGRAM_POLL_INTERVAL_SECONDS",
-        "DEBUG_EMAIL_BODY_LOGGING",
-        "GOG_EXECUTABLE",
-        "GOG_ACCOUNT",
-        "GOG_CLIENT",
-        "MULTIUSER_ENABLED",
-        "PUBLIC_BASE_URL",
-        "GOOGLE_OAUTH_CLIENT_ID",
-        "GOOGLE_OAUTH_CLIENT_SECRET",
-        "GOOGLE_OAUTH_REDIRECT_PATH",
-        "TOKEN_ENCRYPTION_KEY",
-        "INVITE_ONLY",
-        "INVITED_TELEGRAM_USER_IDS",
-        "OAUTH_SESSION_TTL_MINUTES",
-        "OAUTH_HOST",
-        "OAUTH_PORT",
-    ]
-    for key in default_keys:
+def clear_optional_env(monkeypatch):
+    for key in OPTIONAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
 
+
+def test_settings_defaults(monkeypatch):
+    clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
 
     settings = Settings(_env_file=None)
@@ -82,6 +87,7 @@ def test_settings_defaults(monkeypatch):
 
 
 def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
+    clear_optional_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_ID", "123")
     monkeypatch.setenv("TELEGRAM_AUTHORIZED_USER_ID", "456")
@@ -105,7 +111,56 @@ def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
     assert settings.invited_telegram_user_ids_tuple == (111, 222)
 
 
+def test_blank_optional_env_file_values_use_defaults(monkeypatch, tmp_path):
+    clear_optional_env(monkeypatch)
+    for key in REQUIRED_ENV:
+        monkeypatch.delenv(key, raising=False)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "TELEGRAM_BOT_TOKEN=token",
+                "TELEGRAM_AUTHORIZED_CHAT_ID=123",
+                "TELEGRAM_AUTHORIZED_USER_ID=456",
+                "SQLITE_DATABASE_PATH=/tmp/hermes.sqlite3",
+                "PUBLIC_BASE_URL=",
+                "GOOGLE_OAUTH_CLIENT_ID=",
+                "GOOGLE_OAUTH_CLIENT_SECRET=",
+                "TOKEN_ENCRYPTION_KEY=",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.public_base_url is None
+    assert settings.google_oauth_client_id is None
+    assert settings.google_oauth_client_secret is None
+    assert settings.token_encryption_key is None
+
+
+def test_invited_telegram_user_ids_must_be_comma_separated_integers(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("INVITED_TELEGRAM_USER_IDS", "111,abc")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_google_oauth_redirect_path_must_start_with_slash(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_PATH", "oauth/google/callback")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_do_not_require_openclaw_rest_credentials(monkeypatch):
+    clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
     monkeypatch.delenv("OPENCLAW_API_KEY", raising=False)
     monkeypatch.delenv("OPENCLAW_BASE_URL", raising=False)
@@ -124,6 +179,7 @@ def test_settings_do_not_require_openclaw_rest_credentials(monkeypatch):
     ],
 )
 def test_time_settings_must_use_hh_mm_format(monkeypatch, key):
+    clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
     monkeypatch.setenv(key, "25:99")
 
@@ -140,10 +196,13 @@ def test_time_settings_must_use_hh_mm_format(monkeypatch, key):
         "CALENDAR_POLL_INTERVAL_SECONDS",
         "REMINDER_LEAD_MINUTES",
         "PENDING_REPLY_EXPIRY_DAYS",
+        "OAUTH_SESSION_TTL_MINUTES",
+        "OAUTH_PORT",
     ],
 )
 @pytest.mark.parametrize("value", ["0", "-1"])
 def test_interval_and_count_settings_must_be_positive(monkeypatch, key, value):
+    clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
     monkeypatch.setenv(key, value)
 
