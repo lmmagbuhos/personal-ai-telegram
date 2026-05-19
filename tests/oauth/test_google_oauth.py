@@ -25,17 +25,22 @@ class FakeCredentials:
         token="access",
         refresh_token="refresh",
         scopes=UNSET,
+        granted_scopes=UNSET,
         expiry=datetime(2026, 5, 19, 9, 0, tzinfo=UTC),
     ) -> None:
         self.token = token
         self.refresh_token = refresh_token
         self.scopes = ["scope-a", "scope-b"] if scopes is UNSET else scopes
+        self.granted_scopes = (
+            GOOGLE_OAUTH_SCOPES if granted_scopes is UNSET else granted_scopes
+        )
         self.expiry = expiry
 
 
 class FakeFlow:
-    def __init__(self, credentials=None) -> None:
+    def __init__(self, credentials=None, token_error=None) -> None:
         self.credentials = credentials or FakeCredentials()
+        self.token_error = token_error
         self.redirect_uri = None
         self.authorization_kwargs = None
         self.code = None
@@ -51,6 +56,8 @@ class FakeFlow:
         ), kwargs["state"]
 
     def fetch_token(self, code: str) -> None:
+        if self.token_error is not None:
+            raise self.token_error
         self.code = code
 
 
@@ -115,7 +122,7 @@ def test_exchange_code_returns_token_bundle_from_flow_and_userinfo():
     assert bundle == GoogleTokenBundle(
         access_token="access",
         refresh_token="refresh",
-        granted_scopes=("scope-a", "scope-b"),
+        granted_scopes=GOOGLE_OAUTH_SCOPES,
         token_expires_at=datetime(2026, 5, 19, 9, 0, tzinfo=UTC),
         google_subject="google-subject",
         google_email="person@example.test",
@@ -145,14 +152,24 @@ def test_exchange_code_fetches_userinfo_with_access_token():
     assert seen_access_tokens == ["access"]
 
 
-def test_exchange_code_defaults_granted_scopes_when_credentials_scopes_absent():
+def test_exchange_code_uses_normalized_actual_granted_scopes():
     service = GoogleOAuthService(
         GoogleOAuthConfig(
             client_id="client-id",
             client_secret="client-secret",
             redirect_uri="https://example.test/oauth/google/callback",
         ),
-        flow_factory=lambda **kwargs: FakeFlow(FakeCredentials(scopes=None)),
+        flow_factory=lambda **kwargs: FakeFlow(
+            FakeCredentials(
+                granted_scopes=[
+                    " openid ",
+                    "email",
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/calendar.events.readonly",
+                ],
+            ),
+        ),
         userinfo_fetcher=lambda access_token: {
             "sub": "google-subject",
             "email": "person@example.test",
@@ -277,6 +294,80 @@ def test_exchange_code_rejects_missing_access_token():
 
     with pytest.raises(GoogleOAuthError, match="missing access token"):
         service.exchange_code(code="oauth-code")
+
+
+@pytest.mark.parametrize(
+    "granted_scopes",
+    (None, [], ["  "], [None]),
+)
+def test_exchange_code_rejects_missing_granted_scope_data(granted_scopes):
+    service = GoogleOAuthService(
+        GoogleOAuthConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            redirect_uri="https://example.test/oauth/google/callback",
+        ),
+        flow_factory=lambda **kwargs: FakeFlow(
+            FakeCredentials(granted_scopes=granted_scopes),
+        ),
+        userinfo_fetcher=lambda access_token: {
+            "sub": "google-subject",
+            "email": "person@example.test",
+        },
+    )
+
+    with pytest.raises(GoogleOAuthError, match="missing granted scopes"):
+        service.exchange_code(code="oauth-code")
+
+
+def test_exchange_code_rejects_missing_required_google_scopes():
+    service = GoogleOAuthService(
+        GoogleOAuthConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            redirect_uri="https://example.test/oauth/google/callback",
+        ),
+        flow_factory=lambda **kwargs: FakeFlow(
+            FakeCredentials(
+                granted_scopes=[
+                    "openid",
+                    "email",
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://www.googleapis.com/auth/gmail.send",
+                ],
+            ),
+        ),
+        userinfo_fetcher=lambda access_token: {
+            "sub": "google-subject",
+            "email": "person@example.test",
+        },
+    )
+
+    with pytest.raises(GoogleOAuthError, match="missing required granted scopes"):
+        service.exchange_code(code="oauth-code")
+
+
+def test_exchange_code_wraps_token_exchange_failures():
+    service = GoogleOAuthService(
+        GoogleOAuthConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            redirect_uri="https://example.test/oauth/google/callback",
+        ),
+        flow_factory=lambda **kwargs: FakeFlow(token_error=RuntimeError("boom")),
+        userinfo_fetcher=lambda access_token: {
+            "sub": "google-subject",
+            "email": "person@example.test",
+        },
+    )
+
+    with pytest.raises(
+        GoogleOAuthError,
+        match="Google OAuth token exchange failed",
+    ) as exc_info:
+        service.exchange_code(code="oauth-code")
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 @pytest.mark.parametrize(

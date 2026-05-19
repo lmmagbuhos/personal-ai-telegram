@@ -47,6 +47,7 @@ class GoogleCredentials(Protocol):
     token: str | None
     refresh_token: str | None
     scopes: list[str] | tuple[str, ...] | None
+    granted_scopes: list[str] | tuple[str, ...] | None
     expiry: datetime | None
 
 
@@ -93,7 +94,10 @@ class GoogleOAuthService:
 
     def exchange_code(self, *, code: str) -> GoogleTokenBundle:
         flow = self._new_flow()
-        flow.fetch_token(code=code)
+        try:
+            flow.fetch_token(code=code)
+        except Exception as exc:
+            raise GoogleOAuthError("Google OAuth token exchange failed") from exc
 
         credentials = flow.credentials
         access_token = self._require_non_empty_string(
@@ -216,15 +220,21 @@ class GoogleOAuthService:
 
     @staticmethod
     def _granted_scopes(credentials: GoogleCredentials) -> tuple[str, ...]:
-        scopes = credentials.scopes
+        scopes = credentials.granted_scopes
         if scopes is None:
-            return GOOGLE_OAUTH_SCOPES
+            raise GoogleOAuthError("Google OAuth credentials are missing granted scopes")
 
         granted_scopes = tuple(
             scope.strip() for scope in scopes if isinstance(scope, str) and scope.strip()
         )
         if not granted_scopes:
             raise GoogleOAuthError("Google OAuth credentials are missing granted scopes")
+
+        missing_scopes = set(GOOGLE_OAUTH_SCOPES).difference(granted_scopes)
+        if missing_scopes:
+            raise GoogleOAuthError(
+                "Google OAuth credentials are missing required granted scopes"
+            )
 
         return granted_scopes
 
