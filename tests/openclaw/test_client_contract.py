@@ -285,3 +285,49 @@ def test_list_calendar_events_invokes_gog_and_maps_events():
             attendees=(),
         ),
     ]
+
+
+def test_with_access_token_includes_access_token_flag():
+    runner = FakeCommandRunner(
+        [
+            {
+                "events": [
+                    {
+                        "id": "event-1",
+                        "title": "Planning",
+                        "start_at": "2026-05-19T09:00:00+08:00",
+                        "end_at": "2026-05-19T10:00:00+08:00",
+                        "all_day": False,
+                    }
+                ]
+            }
+        ]
+    )
+    client = OpenClawClient(command_runner=runner)
+    authed_client = client.with_access_token("secret-token")
+
+    authed_client.list_calendar_events(
+        datetime(2026, 5, 19, tzinfo=UTC),
+        datetime(2026, 5, 20, tzinfo=UTC),
+    )
+
+    assert runner.calls == [
+        (
+            [
+                "gog",
+                "--access-token",
+                "secret-token",
+                "calendar",
+                "events",
+                "primary",
+                "--from",
+                "2026-05-19T00:00:00+00:00",
+                "--to",
+                "2026-05-20T00:00:00+00:00",
+                "--json",
+                "--all-pages",
+                "--no-input",
+            ],
+            None,
+        )
+    ]

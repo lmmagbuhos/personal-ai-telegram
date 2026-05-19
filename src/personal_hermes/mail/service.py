@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from personal_hermes.mail.summarizer import (
@@ -44,21 +44,43 @@ class MailPollingService:
         openclaw_client: MailClient,
         telegram: TelegramNotifier,
         store: StateStore,
-        authorized_chat_id: int,
+        authorized_chat_id: int | None = None,
+        default_user_id: int | None = None,
         pending_reply_expiry_days: int,
+        resolve_access_token=None,
     ) -> None:
         self.openclaw_client = openclaw_client
         self.telegram = telegram
         self.store = store
         self.authorized_chat_id = authorized_chat_id
         self.pending_reply_expiry_days = pending_reply_expiry_days
+        self.default_user_id = default_user_id
+        self.resolve_access_token = resolve_access_token
 
-    def poll(self, *, since_cursor: str | None, now: datetime) -> MailPollResult:
+    def poll(
+        self,
+        *,
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        since_cursor: str | None,
+        now: datetime,
+    ) -> MailPollResult:
+        if chat_id is None:
+            if self.authorized_chat_id is None:
+                raise ValueError("chat_id is required for mail polling")
+            chat_id = self.authorized_chat_id
+
+        if user_id is None:
+            user_id = self.default_user_id
+
         notified_count = 0
         pending_reply_count = 0
+        client = self._openclaw_client_for_user(user_id, now=now)
+        if client is None:
+            return MailPollResult(notified_count=0, pending_reply_count=0)
 
-        for message in self.openclaw_client.list_new_inbox_messages(since_cursor):
-            if self.store.has_seen_email(message.id):
+        for message in client.list_new_inbox_messages(since_cursor):
+            if self.store.has_seen_email(user_id=user_id, email_id=message.id):
                 continue
 
             summary = summarize_email(message)
@@ -66,6 +88,7 @@ class MailPollingService:
             pending_reply_id = 0
             if suggested_reply:
                 pending_reply_id = self.store.create_pending_reply(
+                    user_id=user_id,
                     email_id=message.id,
                     thread_id=message.thread_id,
                     reply_text=suggested_reply,
@@ -84,7 +107,7 @@ class MailPollingService:
                 else [[("Ignore", "ignore_reply:0"), ("Mark read", f"mark_read:{message.id}")]]
             )
             telegram_message_id = self.telegram.send_message(
-                chat_id=self.authorized_chat_id,
+                chat_id=chat_id,
                 text=format_email_notification(
                     message,
                     summary=summary,
@@ -93,6 +116,7 @@ class MailPollingService:
                 buttons=buttons,
             )
             self.store.mark_email_seen(
+                user_id=user_id,
                 email_id=message.id,
                 thread_id=message.thread_id,
                 subject=message.subject,
@@ -106,3 +130,20 @@ class MailPollingService:
             notified_count=notified_count,
             pending_reply_count=pending_reply_count,
         )
+
+    def _openclaw_client_for_user(self, user_id: int | None, *, now: datetime | None = None):
+        if self.resolve_access_token is None or user_id is None:
+            return self.openclaw_client
+
+        now = now or datetime.now(tz=UTC)
+        try:
+            access_token = self.resolve_access_token(user_id, now=now)
+        except TypeError:
+            access_token = self.resolve_access_token(user_id)
+
+        if access_token is None:
+            return None
+        if not hasattr(self.openclaw_client, "with_access_token"):
+            return self.openclaw_client
+
+        return self.openclaw_client.with_access_token(access_token)

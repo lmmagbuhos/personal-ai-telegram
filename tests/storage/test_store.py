@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import UTC, date, datetime, timedelta
 
 from personal_hermes.storage.store import StateStore
@@ -146,3 +147,148 @@ def test_conversation_state_round_trip_and_clear(tmp_path):
     store.clear_conversation_state(123)
     assert store.get_conversation_state(123) is None
 
+
+def test_initialize_migrates_legacy_single_user_schema(tmp_path):
+    database_path = tmp_path / "state.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE seen_emails (
+                email_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                telegram_message_id INTEGER
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE pending_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                reply_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                telegram_message_id INTEGER
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE reply_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                telegram_user_id INTEGER NOT NULL,
+                telegram_action_id TEXT NOT NULL,
+                sent_at TEXT NOT NULL
+            )
+            """
+        )
+        now = datetime(2026, 5, 19, 8, 0, tzinfo=UTC)
+        connection.execute(
+            """
+            INSERT INTO seen_emails (
+                email_id,
+                thread_id,
+                subject,
+                sender,
+                first_seen_at,
+                telegram_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-legacy",
+                "thread-legacy",
+                "Legacy subject",
+                "legacy@example.com",
+                now.isoformat(),
+                10,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO pending_replies (
+                email_id,
+                thread_id,
+                reply_text,
+                status,
+                created_at,
+                expires_at,
+                telegram_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-legacy",
+                "thread-legacy",
+                "Legacy reply",
+                "pending",
+                now.isoformat(),
+                (now + timedelta(days=1)).isoformat(),
+                11,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO reply_audit_log (
+                email_id,
+                thread_id,
+                recipient,
+                subject,
+                telegram_user_id,
+                telegram_action_id,
+                sent_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "msg-legacy",
+                "thread-legacy",
+                "legacy@example.com",
+                "Legacy subject",
+                12345,
+                "cb-legacy",
+                now.isoformat(),
+            ),
+        )
+
+    store = StateStore(database_path)
+    store.initialize()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.row_factory = sqlite3.Row
+        user = connection.execute(
+            "SELECT id FROM users WHERE telegram_user_id = 0 AND telegram_chat_id = 0"
+        ).fetchone()
+        assert user is not None
+        default_user_id = int(user["id"])
+
+        seen_row = connection.execute(
+            "SELECT user_id FROM seen_emails WHERE email_id = ?",
+            ("msg-legacy",),
+        ).fetchone()
+        assert seen_row is not None and int(seen_row["user_id"]) == default_user_id
+
+        pending_row = connection.execute(
+            "SELECT id, user_id FROM pending_replies WHERE email_id = ?",
+            ("msg-legacy",),
+        ).fetchone()
+        assert pending_row is not None
+        assert int(pending_row["user_id"]) == default_user_id
+
+        audit_row = connection.execute(
+            "SELECT user_id FROM reply_audit_log WHERE email_id = ?",
+            ("msg-legacy",),
+        ).fetchone()
+        assert audit_row is not None and int(audit_row["user_id"]) == default_user_id
+
+        schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        assert schema_version == 2
+
+    assert store.has_seen_email("msg-legacy") is True
+    assert store.get_pending_reply(1, now=now) is not None

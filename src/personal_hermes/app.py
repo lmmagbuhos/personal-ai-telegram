@@ -1,16 +1,21 @@
 import argparse
 import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+import uvicorn
 
 from personal_hermes.calendar.notifications import CalendarNotificationService
 from personal_hermes.calendar.service import CalendarService
 from personal_hermes.config import Settings
+from personal_hermes.oauth.crypto import TokenCipher
+from personal_hermes.oauth.google import GoogleOAuthConfig, GoogleOAuthService
+from personal_hermes.oauth.web import create_oauth_app
 from personal_hermes.mail.actions import MailActionService
 from personal_hermes.mail.service import MailPollingService
 from personal_hermes.openclaw.client import CommandRunner, OpenClawClient
@@ -38,6 +43,8 @@ class AppComponents:
     mail_action_service: MailActionService
     router: AssistantRouter
     scheduler: AssistantScheduler
+    oauth_service: GoogleOAuthService | None = None
+    oauth_app: object | None = None
 
 
 ExecutableResolver = Callable[[str], str | None]
@@ -46,6 +53,67 @@ ExecutableResolver = Callable[[str], str | None]
 class JobScheduler(Protocol):
     def add_job(self, func: Callable[[], None], trigger: str, **kwargs) -> None:
         ...
+
+
+class GoogleAccessTokenResolver:
+    def __init__(
+        self,
+        *,
+        store: StateStore,
+        token_cipher: TokenCipher,
+        oauth_service: GoogleOAuthService,
+        refresh_margin: timedelta = timedelta(minutes=5),
+    ) -> None:
+        self.store = store
+        self.token_cipher = token_cipher
+        self.oauth_service = oauth_service
+        self.refresh_margin = refresh_margin
+
+    def __call__(self, user_id: int, *, now: datetime) -> str | None:
+        account = self.store.get_google_account(user_id)
+        if account is None or account.status != "active":
+            return None
+
+        try:
+            access_token = self.token_cipher.decrypt(account.encrypted_access_token)
+            refresh_token = self.token_cipher.decrypt(account.encrypted_refresh_token)
+        except Exception:
+            self.store.mark_google_account_status(
+                user_id=user_id,
+                status="reauth_required",
+                now=now,
+            )
+            return None
+
+        if (
+            account.token_expires_at is not None
+            and account.token_expires_at <= now + self.refresh_margin
+        ):
+            try:
+                access_token, token_expires_at = self.oauth_service.refresh_access_token(
+                    refresh_token=refresh_token,
+                    access_token=access_token,
+                )
+            except Exception:
+                self.store.mark_google_account_status(
+                    user_id=user_id,
+                    status="reauth_required",
+                    now=now,
+                )
+                return None
+
+            self.store.save_google_account(
+                user_id=user_id,
+                google_subject=account.google_subject,
+                google_email=account.google_email,
+                encrypted_access_token=self.token_cipher.encrypt(access_token),
+                encrypted_refresh_token=self.token_cipher.encrypt(refresh_token),
+                granted_scopes=account.granted_scopes,
+                token_expires_at=token_expires_at,
+                now=now,
+            )
+
+        return access_token
 
 
 def check_config(
@@ -106,6 +174,17 @@ def configure_job_schedule(
 
 
 def start_runtime(components: AppComponents) -> None:
+    if components.oauth_app is not None:
+        threading.Thread(
+            target=lambda: uvicorn.run(
+                components.oauth_app,
+                host=components.settings.oauth_host,
+                port=components.settings.oauth_port,
+                log_level="error",
+            ),
+            daemon=True,
+        ).start()
+
     job_scheduler = BlockingScheduler(timezone=components.settings.timezone)
     configure_job_schedule(components, job_scheduler)
     job_scheduler.start()
@@ -120,6 +199,9 @@ def build_components(
 ) -> AppComponents:
     store = StateStore(settings.sqlite_database_path)
     store.initialize()
+    oauth_service = None
+    oauth_app = None
+    resolve_access_token = None
 
     openclaw_client = OpenClawClient(
         command_runner=command_runner,
@@ -133,13 +215,42 @@ def build_components(
         authorized_user_id=settings.telegram_authorized_user_id,
         gateway=telegram_gateway,
     )
+
+    if settings.multiuser_enabled:
+        assert settings.google_oauth_client_id is not None
+        assert settings.google_oauth_client_secret is not None
+        assert settings.google_oauth_redirect_url is not None
+        assert settings.token_encryption_key is not None
+
+        oauth_service = GoogleOAuthService(
+            GoogleOAuthConfig(
+                client_id=settings.google_oauth_client_id,
+                client_secret=settings.google_oauth_client_secret,
+                redirect_uri=settings.google_oauth_redirect_url,
+            )
+        )
+        token_cipher = TokenCipher(settings.token_encryption_key)
+        resolve_access_token = GoogleAccessTokenResolver(
+            store=store,
+            token_cipher=token_cipher,
+            oauth_service=oauth_service,
+        )
+        oauth_app = create_oauth_app(
+            store=store,
+            oauth=oauth_service,
+            token_cipher=token_cipher,
+            telegram=telegram,
+        )
+
     calendar_service = CalendarService(
         openclaw_client=openclaw_client,
         timezone=ZoneInfo(settings.timezone),
         workday_start=settings.workday_start,
         workday_end=settings.workday_end,
         min_free_block_minutes=settings.min_free_block_minutes,
+        resolve_access_token=resolve_access_token,
     )
+
     calendar_notifications = CalendarNotificationService(store)
     mail_polling_service = MailPollingService(
         openclaw_client=openclaw_client,
@@ -147,17 +258,23 @@ def build_components(
         store=store,
         authorized_chat_id=settings.telegram_authorized_chat_id,
         pending_reply_expiry_days=settings.pending_reply_expiry_days,
+        resolve_access_token=resolve_access_token,
     )
     mail_action_service = MailActionService(
         openclaw_client=openclaw_client,
         telegram=telegram,
         store=store,
+        resolve_access_token=resolve_access_token,
     )
     router = AssistantRouter(
         telegram=telegram,
         calendar_service=calendar_service,
         mail_action_service=mail_action_service,
         store=store,
+        oauth_service=oauth_service,
+        invite_only=settings.invite_only,
+        invited_telegram_user_ids=settings.invited_telegram_user_ids_tuple,
+        oauth_session_ttl_minutes=settings.oauth_session_ttl_minutes,
     )
     scheduler = AssistantScheduler(
         mail_polling_service=mail_polling_service,
@@ -168,6 +285,9 @@ def build_components(
         authorized_chat_id=settings.telegram_authorized_chat_id,
         reminder_lead_minutes=settings.reminder_lead_minutes,
         telegram_poll_timeout_seconds=settings.telegram_poll_interval_seconds,
+        resolve_access_token=resolve_access_token,
+        store=store if settings.multiuser_enabled else None,
+        multiuser_enabled=settings.multiuser_enabled,
         now_provider=now_provider,
     )
 
@@ -182,6 +302,8 @@ def build_components(
         mail_action_service=mail_action_service,
         router=router,
         scheduler=scheduler,
+        oauth_service=oauth_service,
+        oauth_app=oauth_app,
     )
 
 

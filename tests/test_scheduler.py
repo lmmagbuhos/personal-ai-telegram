@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from personal_hermes.openclaw.types import CalendarEvent
 from personal_hermes.scheduler import AssistantScheduler
+from personal_hermes.users import User
 from personal_hermes.telegram.types import TelegramMessage
 
 
@@ -60,6 +61,14 @@ class FakeRouter:
 
     def handle_event(self, event, *, now: datetime) -> None:
         self.events.append((event, now))
+
+
+class FakeMultiuserStore:
+    def __init__(self, users: list[User]) -> None:
+        self._users = users
+
+    def list_active_google_users(self) -> list[User]:
+        return self._users
 
 
 def make_event(event_id: str, start_at: datetime) -> CalendarEvent:
@@ -148,3 +157,70 @@ def test_run_telegram_poll_job_dispatches_events_to_router():
 
     assert router.events == [(event, now)]
 
+
+class FakeMailPollerForMultiuser:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str | None, datetime, int, int]] = []
+
+    def poll(
+        self,
+        *,
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        since_cursor: str | None,
+        now: datetime,
+    ) -> None:
+        self.calls.append((since_cursor, now, user_id, chat_id))
+
+
+def test_run_gmail_poll_job_runs_each_active_user_when_multiuser_enabled():
+    now = datetime(2026, 5, 19, 8, 0, tzinfo=UTC)
+    openclaw = FakeOpenClawClient([])
+    notifier = FakeTelegram()
+    calendar_notifications = FakeCalendarNotificationService()
+    mail = FakeMailPollerForMultiuser()
+    router = FakeRouter()
+    users = [
+        User(
+            id=1,
+            telegram_user_id=111,
+            telegram_chat_id=1111,
+            display_name="A",
+            username="a",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        ),
+        User(
+            id=2,
+            telegram_user_id=222,
+            telegram_chat_id=2222,
+            display_name="B",
+            username="b",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    store = FakeMultiuserStore(users)
+
+    scheduler = AssistantScheduler(
+        mail_polling_service=mail,
+        openclaw_client=openclaw,
+        calendar_notifications=calendar_notifications,
+        telegram=notifier,
+        router=router,
+        authorized_chat_id=999,
+        reminder_lead_minutes=30,
+        telegram_poll_timeout_seconds=2,
+        store=store,
+        multiuser_enabled=True,
+        now_provider=lambda: now,
+    )
+
+    scheduler.run_gmail_poll_job(since_cursor=None)
+
+    assert mail.calls == [
+        (None, now, 1, 1111),
+        (None, now, 2, 2222),
+    ]

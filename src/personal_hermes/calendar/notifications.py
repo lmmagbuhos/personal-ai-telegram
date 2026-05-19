@@ -13,9 +13,10 @@ class CalendarNotificationService:
         agenda_date: date,
         events: list[CalendarEvent],
         *,
+        user_id: int | None = None,
         now: datetime,
     ) -> list[CalendarEvent]:
-        if not self.store.mark_agenda_sent(agenda_date, sent_at=now):
+        if not self.store.mark_agenda_sent(agenda_date, user_id=user_id, sent_at=now):
             return []
         return events
 
@@ -25,6 +26,7 @@ class CalendarNotificationService:
         *,
         now: datetime,
         lead_minutes: int,
+        user_id: int | None = None,
     ) -> list[CalendarEvent]:
         due: list[CalendarEvent] = []
         window_end = now + timedelta(minutes=lead_minutes)
@@ -37,6 +39,7 @@ class CalendarNotificationService:
                 event_id=event.id,
                 event_start_at=event.start_at,
                 sent_at=now,
+                user_id=user_id,
             ):
                 due.append(event)
         return due

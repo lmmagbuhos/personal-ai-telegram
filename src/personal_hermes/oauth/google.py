@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
 
@@ -20,6 +22,7 @@ GOOGLE_OAUTH_SCOPES = (
 
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GOOGLE_USERINFO_TIMEOUT_SECONDS = 10.0
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 class GoogleOAuthError(Exception):
@@ -160,6 +163,31 @@ class GoogleOAuthService:
             raise GoogleOAuthError("Google OAuth callback has blank code")
 
         return self.exchange_code(code=code)
+
+    def refresh_access_token(
+        self,
+        *,
+        refresh_token: str,
+        access_token: str | None = None,
+    ) -> tuple[str, datetime | None]:
+        credentials = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri=GOOGLE_TOKEN_URI,
+            client_id=self._config.client_id,
+            client_secret=self._config.client_secret,
+            scopes=list(GOOGLE_OAUTH_SCOPES),
+        )
+        try:
+            credentials.refresh(Request())
+        except Exception as exc:
+            raise GoogleOAuthError("Google OAuth token refresh failed") from exc
+
+        token = self._require_non_empty_string(
+            credentials.token,
+            "Google OAuth token refresh produced empty token",
+        )
+        return token, credentials.expiry
 
     def _new_flow(self) -> GoogleFlow:
         flow = self._flow_factory(

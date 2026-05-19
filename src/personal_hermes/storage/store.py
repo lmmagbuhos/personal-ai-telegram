@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from personal_hermes.users import GoogleAccount, OAuthSession, User
 @dataclass(frozen=True)
 class PendingReply:
     id: int
+    user_id: int
     email_id: str
     thread_id: str
     reply_text: str
@@ -23,6 +24,7 @@ class PendingReply:
 
 @dataclass(frozen=True)
 class ConversationState:
+    user_id: int
     telegram_chat_id: int
     state: str
     payload: dict[str, Any]
@@ -30,14 +32,24 @@ class ConversationState:
 
 
 class StateStore:
+    _CURRENT_SCHEMA_VERSION = 2
+
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
+        self._default_user_id: int | None = None
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         schema = resources.files("personal_hermes.storage").joinpath("schema.sql")
         with self._connect() as connection:
             connection.executescript(schema.read_text(encoding="utf-8"))
+            current_version = self._get_schema_version(connection)
+            if current_version < self._CURRENT_SCHEMA_VERSION:
+                self._migrate_schema(connection, current_version)
+                self._set_schema_version(
+                    connection,
+                    self._CURRENT_SCHEMA_VERSION,
+                )
 
     def upsert_user_from_telegram(
         self,
@@ -111,17 +123,40 @@ class StateStore:
         return self._user_from_row(row)
 
     def activate_user(self, user_id: int, now: datetime) -> bool:
+        return self._update_user_status(user_id=user_id, status="active", now=now)
+
+    def mark_user_status(self, user_id: int, status: str, now: datetime) -> bool:
+        return self._update_user_status(user_id=user_id, status=status, now=now)
+
+    def _update_user_status(self, user_id: int, status: str, *, now: datetime) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE users
-                SET status = 'active',
+                SET status = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (self._datetime_to_text(now), user_id),
+                (status, self._datetime_to_text(now), user_id),
             )
             return cursor.rowcount == 1
+
+    def bootstrap_single_user(
+        self,
+        *,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+        now: datetime,
+    ) -> User:
+        user = self.upsert_user_from_telegram(
+            telegram_user_id=telegram_user_id,
+            telegram_chat_id=telegram_chat_id,
+            display_name=None,
+            username=None,
+            now=now,
+        )
+        self.activate_user(user.id, now=now)
+        return user
 
     def list_active_google_users(self) -> list[User]:
         with self._connect() as connection:
@@ -287,6 +322,7 @@ class StateStore:
     def mark_email_seen(
         self,
         *,
+        user_id: int | None = None,
         email_id: str,
         thread_id: str,
         subject: str,
@@ -294,10 +330,12 @@ class StateStore:
         telegram_message_id: int | None,
         first_seen_at: datetime,
     ) -> bool:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO seen_emails (
+                    user_id,
                     email_id,
                     thread_id,
                     subject,
@@ -305,9 +343,10 @@ class StateStore:
                     first_seen_at,
                     telegram_message_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    user_id,
                     email_id,
                     thread_id,
                     subject,
@@ -318,17 +357,19 @@ class StateStore:
             )
             return cursor.rowcount == 1
 
-    def has_seen_email(self, email_id: str) -> bool:
+    def has_seen_email(self, email_id: str, *, user_id: int | None = None) -> bool:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM seen_emails WHERE email_id = ?",
-                (email_id,),
+                "SELECT 1 FROM seen_emails WHERE user_id = ? AND email_id = ?",
+                (user_id, email_id),
             ).fetchone()
         return row is not None
 
     def create_pending_reply(
         self,
         *,
+        user_id: int | None = None,
         email_id: str,
         thread_id: str,
         reply_text: str,
@@ -336,10 +377,12 @@ class StateStore:
         expires_at: datetime,
         telegram_message_id: int | None,
     ) -> int:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO pending_replies (
+                    user_id,
                     email_id,
                     thread_id,
                     reply_text,
@@ -348,9 +391,10 @@ class StateStore:
                     expires_at,
                     telegram_message_id
                 )
-                VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
                 """,
                 (
+                    user_id,
                     email_id,
                     thread_id,
                     reply_text,
@@ -365,15 +409,22 @@ class StateStore:
         self,
         pending_reply_id: int,
         *,
+        user_id: int | None = None,
         now: datetime | None = None,
     ) -> PendingReply | None:
         if now is not None:
             self.expire_pending_replies(now)
 
+        where = "id = ?"
+        params: list[Any] = [pending_reply_id]
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
+
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM pending_replies WHERE id = ?",
-                (pending_reply_id,),
+                f"SELECT * FROM pending_replies WHERE {where}",
+                params,
             ).fetchone()
 
         if row is None:
@@ -383,15 +434,25 @@ class StateStore:
             return None
         return reply
 
-    def update_pending_reply_text(self, pending_reply_id: int, reply_text: str) -> bool:
+    def update_pending_reply_text(
+        self,
+        pending_reply_id: int,
+        reply_text: str,
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        user_id = self._resolve_user_id(user_id)
+        where = "id = ? AND user_id = ? AND status = 'pending'"
+        params: list[Any] = [reply_text, pending_reply_id, user_id]
+
         with self._connect() as connection:
             cursor = connection.execute(
-                """
+                f"""
                 UPDATE pending_replies
                 SET reply_text = ?
-                WHERE id = ? AND status = 'pending'
+                WHERE {where}
                 """,
-                (reply_text, pending_reply_id),
+                params,
             )
             return cursor.rowcount == 1
 
@@ -420,6 +481,7 @@ class StateStore:
     def record_reply_audit(
         self,
         *,
+        user_id: int | None = None,
         email_id: str,
         thread_id: str,
         recipient: str,
@@ -428,10 +490,12 @@ class StateStore:
         telegram_action_id: str,
         sent_at: datetime,
     ) -> int:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO reply_audit_log (
+                    user_id,
                     email_id,
                     thread_id,
                     recipient,
@@ -440,9 +504,10 @@ class StateStore:
                     telegram_action_id,
                     sent_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    user_id,
                     email_id,
                     thread_id,
                     recipient,
@@ -456,41 +521,59 @@ class StateStore:
 
     def count_reply_audits(self) -> int:
         with self._connect() as connection:
-            row = connection.execute("SELECT COUNT(*) AS count FROM reply_audit_log").fetchone()
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM reply_audit_log"
+            ).fetchone()
         return int(row["count"])
 
-    def mark_agenda_sent(self, agenda_date: date, *, sent_at: datetime) -> bool:
+    def mark_agenda_sent(
+        self,
+        agenda_date: date,
+        *,
+        user_id: int | None = None,
+        sent_at: datetime,
+    ) -> bool:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO calendar_agenda_notifications (
+                    user_id,
                     agenda_date,
                     sent_at
                 )
-                VALUES (?, ?)
+                VALUES (?, ?, ?)
                 """,
-                (agenda_date.isoformat(), self._datetime_to_text(sent_at)),
+                (
+                    user_id,
+                    agenda_date.isoformat(),
+                    self._datetime_to_text(sent_at),
+                ),
             )
             return cursor.rowcount == 1
 
     def mark_calendar_reminder_sent(
         self,
         *,
+        user_id: int | None = None,
         event_id: str,
         event_start_at: datetime,
         sent_at: datetime,
     ) -> bool:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO calendar_reminders (
+                    user_id,
                     event_id,
                     event_start_at,
                     sent_at
                 )
-                VALUES (?, ?, ?)
+                VALUES (?, ?, ?, ?)
                 """,
                 (
+                    user_id,
                     event_id,
                     self._datetime_to_text(event_start_at),
                     self._datetime_to_text(sent_at),
@@ -501,27 +584,31 @@ class StateStore:
     def set_conversation_state(
         self,
         *,
+        user_id: int | None = None,
         telegram_chat_id: int,
         state: str,
         payload: dict[str, Any],
         updated_at: datetime,
     ) -> None:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO conversation_state (
+                    user_id,
                     telegram_chat_id,
                     state,
                     payload_json,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(telegram_chat_id) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, telegram_chat_id) DO UPDATE SET
                     state = excluded.state,
                     payload_json = excluded.payload_json,
                     updated_at = excluded.updated_at
                 """,
                 (
+                    user_id,
                     telegram_chat_id,
                     state,
                     json.dumps(payload),
@@ -529,32 +616,50 @@ class StateStore:
                 ),
             )
 
-    def get_conversation_state(self, telegram_chat_id: int) -> ConversationState | None:
+    def get_conversation_state(
+        self,
+        telegram_chat_id: int,
+        *,
+        user_id: int | None = None,
+    ) -> ConversationState | None:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM conversation_state WHERE telegram_chat_id = ?",
-                (telegram_chat_id,),
+                """
+                SELECT *
+                FROM conversation_state
+                WHERE user_id = ? AND telegram_chat_id = ?
+                """,
+                (user_id, telegram_chat_id),
             ).fetchone()
 
         if row is None:
             return None
         return ConversationState(
+            user_id=int(row["user_id"]),
             telegram_chat_id=int(row["telegram_chat_id"]),
             state=str(row["state"]),
             payload=json.loads(str(row["payload_json"])),
             updated_at=self._text_to_datetime(str(row["updated_at"])),
         )
 
-    def clear_conversation_state(self, telegram_chat_id: int) -> None:
+    def clear_conversation_state(
+        self,
+        telegram_chat_id: int,
+        *,
+        user_id: int | None = None,
+    ) -> None:
+        user_id = self._resolve_user_id(user_id)
         with self._connect() as connection:
             connection.execute(
-                "DELETE FROM conversation_state WHERE telegram_chat_id = ?",
-                (telegram_chat_id,),
+                """
+                DELETE FROM conversation_state
+                WHERE user_id = ? AND telegram_chat_id = ?
+                """,
+                (user_id, telegram_chat_id),
             )
 
-    def _update_pending_reply_status(
-        self, pending_reply_id: int, status: str
-    ) -> bool:
+    def _update_pending_reply_status(self, pending_reply_id: int, status: str) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -566,11 +671,133 @@ class StateStore:
             )
             return cursor.rowcount == 1
 
+    def _migrate_schema(self, connection: sqlite3.Connection, current_version: int) -> None:
+        if current_version == 0:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_user_id INTEGER NOT NULL,
+                    telegram_chat_id INTEGER NOT NULL,
+                    display_name TEXT,
+                    username TEXT,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('pending', 'active', 'revoked', 'disabled')
+                    ),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (telegram_user_id, telegram_chat_id)
+                )
+                """
+            )
+
+            for table in (
+                "seen_emails",
+                "pending_replies",
+                "reply_audit_log",
+                "calendar_agenda_notifications",
+                "calendar_reminders",
+                "conversation_state",
+            ):
+                self._add_user_id_column(connection, table)
+
+            return
+
+        if current_version == 1:
+            for table in (
+                "seen_emails",
+                "pending_replies",
+                "reply_audit_log",
+                "calendar_agenda_notifications",
+                "calendar_reminders",
+                "conversation_state",
+            ):
+                self._add_user_id_column(connection, table)
+
+            return
+
+    def _add_user_id_column(self, connection: sqlite3.Connection, table: str) -> None:
+        if not self._table_exists(connection, table):
+            return
+        if self._has_column(connection, table, "user_id"):
+            return
+
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+        default_user_id = self._ensure_default_user(connection)
+        connection.execute(
+            f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
+            (default_user_id,),
+        )
+
+    def _get_schema_version(self, connection: sqlite3.Connection) -> int:
+        row = connection.execute("PRAGMA user_version").fetchone()
+        if row is None:
+            return 0
+        return int(row[0])
+
+    def _set_schema_version(
+        self, connection: sqlite3.Connection, version: int
+    ) -> None:
+        connection.execute(f"PRAGMA user_version = {version}")
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _table_exists(self, connection: sqlite3.Connection, table_name: str) -> bool:
+        row = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    def _has_column(self, connection: sqlite3.Connection, table_name: str, name: str) -> bool:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(row["name"] == name for row in rows)
+
+    def _resolve_user_id(self, user_id: int | None) -> int:
+        if user_id is not None:
+            return user_id
+        return self._ensure_default_user()
+
+    def _ensure_default_user(self, connection: sqlite3.Connection | None = None) -> int:
+        if self._default_user_id is not None:
+            return self._default_user_id
+
+        now = datetime.now(tz=UTC)
+        if connection is None:
+            with self._connect() as connection:
+                return self._ensure_default_user(connection)
+
+        row = connection.execute(
+            """
+            SELECT id FROM users
+            WHERE telegram_user_id = 0 AND telegram_chat_id = 0
+            """
+        ).fetchone()
+        if row is not None:
+            self._default_user_id = int(row["id"])
+            return self._default_user_id
+
+        cursor = connection.execute(
+            """
+            INSERT INTO users (
+                telegram_user_id,
+                telegram_chat_id,
+                display_name,
+                username,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (0, 0, 'Bootstrap User', NULL, 'active', ?, ?)
+            """,
+            (self._datetime_to_text(now), self._datetime_to_text(now)),
+        )
+        self._default_user_id = int(cursor.lastrowid)
+        return self._default_user_id
 
     @staticmethod
     def _user_from_row(row: sqlite3.Row) -> User:
@@ -617,6 +844,7 @@ class StateStore:
     def _pending_reply_from_row(row: sqlite3.Row) -> PendingReply:
         return PendingReply(
             id=int(row["id"]),
+            user_id=int(row["user_id"]),
             email_id=str(row["email_id"]),
             thread_id=str(row["thread_id"]),
             reply_text=str(row["reply_text"]),

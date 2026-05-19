@@ -10,6 +10,7 @@ class FakeOpenClawClient:
     def __init__(self) -> None:
         self.sent_replies: list[SendEmailReplyRequest] = []
         self.marked_read: list[str] = []
+        self.access_tokens: list[str] = []
 
     def get_email_message(self, email_id: str) -> EmailMessage:
         return EmailMessage(
@@ -32,6 +33,10 @@ class FakeOpenClawClient:
 
     def mark_email_read(self, email_id: str) -> None:
         self.marked_read.append(email_id)
+
+    def with_access_token(self, access_token: str) -> "FakeOpenClawClient":
+        self.access_tokens.append(access_token)
+        return self
 
 
 class FakeTelegramAdapter:
@@ -60,7 +65,12 @@ def callback(data: str) -> TelegramCallback:
     )
 
 
-def create_pending(store: StateStore, now: datetime) -> int:
+def create_pending(
+    store: StateStore,
+    now: datetime,
+    *,
+    user_id: int | None = None,
+) -> int:
     return store.create_pending_reply(
         email_id="msg-1",
         thread_id="thread-1",
@@ -68,6 +78,7 @@ def create_pending(store: StateStore, now: datetime) -> int:
         created_at=now,
         expires_at=now + timedelta(days=7),
         telegram_message_id=77,
+        user_id=user_id,
     )
 
 
@@ -161,3 +172,35 @@ def test_mark_read_calls_openclaw_and_updates_telegram():
 
     assert openclaw.marked_read == ["msg-1"]
     assert telegram.answers == [{"callback_query_id": "callback-1", "text": "Marked read"}]
+
+
+def test_callback_uses_access_token_when_user_context_present(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.initialize()
+    now = datetime(2026, 5, 19, 9, 0, tzinfo=UTC)
+    user = store.upsert_user_from_telegram(
+        telegram_user_id=7,
+        telegram_chat_id=7,
+        display_name=None,
+        username=None,
+        now=now,
+    )
+    pending_id = create_pending(
+        store,
+        now,
+        user_id=user.id,
+    )
+    openclaw = FakeOpenClawClient()
+    telegram = FakeTelegramAdapter()
+    service = MailActionService(
+        openclaw_client=openclaw,
+        telegram=telegram,
+        store=store,
+        resolve_access_token=lambda user_id, now: (
+            "token-7" if user_id == user.id else None
+        ),
+    )
+
+    service.handle_callback(callback(f"send_reply:{pending_id}"), user_id=user.id, now=now)
+
+    assert openclaw.access_tokens == ["token-7"]

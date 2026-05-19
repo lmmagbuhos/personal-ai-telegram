@@ -37,16 +37,20 @@ CREATE TABLE IF NOT EXISTS google_accounts (
 );
 
 CREATE TABLE IF NOT EXISTS seen_emails (
-    email_id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    email_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
     subject TEXT NOT NULL,
     sender TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
-    telegram_message_id INTEGER
+    telegram_message_id INTEGER,
+    PRIMARY KEY (user_id, email_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS pending_replies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     email_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
     reply_text TEXT NOT NULL,
@@ -55,35 +59,46 @@ CREATE TABLE IF NOT EXISTS pending_replies (
     ),
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    telegram_message_id INTEGER
+    telegram_message_id INTEGER,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS reply_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     email_id TEXT NOT NULL,
     thread_id TEXT NOT NULL,
     recipient TEXT NOT NULL,
     subject TEXT NOT NULL,
     telegram_user_id INTEGER NOT NULL,
     telegram_action_id TEXT NOT NULL,
-    sent_at TEXT NOT NULL
+    sent_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS calendar_agenda_notifications (
-    agenda_date TEXT PRIMARY KEY,
-    sent_at TEXT NOT NULL
+    user_id INTEGER NOT NULL,
+    agenda_date TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, agenda_date),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS calendar_reminders (
+    user_id INTEGER NOT NULL,
     event_id TEXT NOT NULL,
     event_start_at TEXT NOT NULL,
     sent_at TEXT NOT NULL,
-    PRIMARY KEY (event_id, event_start_at)
+    PRIMARY KEY (user_id, event_id, event_start_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS conversation_state (
-    telegram_chat_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    telegram_chat_id INTEGER NOT NULL,
     state TEXT NOT NULL,
     payload_json TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, telegram_chat_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

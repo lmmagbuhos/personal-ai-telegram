@@ -8,13 +8,20 @@ from personal_hermes.openclaw.types import CalendarEvent
 class FakeOpenClawClient:
     def __init__(self, events: list[CalendarEvent]) -> None:
         self.events = events
+        self.access_tokens: list[str] = []
         self.calls: list[tuple[datetime, datetime]] = []
+        self.was_called = False
 
     def list_calendar_events(
         self, start_at: datetime, end_at: datetime
     ) -> list[CalendarEvent]:
+        self.was_called = True
         self.calls.append((start_at, end_at))
         return self.events
+
+    def with_access_token(self, access_token: str) -> "FakeOpenClawClient":
+        self.access_tokens.append(access_token)
+        return self
 
 
 def test_calendar_service_returns_grouped_availability_for_this_week():
@@ -55,3 +62,24 @@ def test_calendar_service_returns_grouped_availability_for_this_week():
             datetime(2026, 5, 24, 16, 0, tzinfo=UTC),
         )
     ]
+
+
+def test_calendar_service_uses_access_token_for_user_context():
+    client = FakeOpenClawClient([])
+
+    service = CalendarService(
+        openclaw_client=client,
+        timezone=ZoneInfo("Asia/Manila"),
+        workday_start="09:00",
+        workday_end="17:00",
+        min_free_block_minutes=120,
+        resolve_access_token=lambda user_id, now: "token-1" if user_id == 42 else None,
+    )
+
+    result = service.availability_for("today", today=date(2026, 5, 19), user_id=42)
+
+    assert client.access_tokens == ["token-1"]
+    assert client.was_called is True
+    assert result is not None
+    assert client.access_tokens == ["token-1"]
+    assert client.calls

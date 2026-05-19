@@ -29,6 +29,23 @@ def make_settings(database_path: Path) -> Settings:
     )
 
 
+def make_multiuser_settings(database_path: Path) -> Settings:
+    return Settings(
+        telegram_bot_token="telegram-token",
+        telegram_authorized_chat_id=123,
+        telegram_authorized_user_id=456,
+        sqlite_database_path=str(database_path),
+        gog_executable="gog",
+        gog_account="lmmagbuhos@oakdriveventures.com",
+        gog_client="default",
+        multiuser_enabled=True,
+        public_base_url="https://hermes.example.com",
+        google_oauth_client_id="client-id",
+        google_oauth_client_secret="client-secret",
+        token_encryption_key="3Qi5g7pADYF_poHyUGd-I3gyoY0u1IsGgqnJcMy6LEw=",
+    )
+
+
 def test_check_config_initializes_sqlite_and_accepts_existing_gog(tmp_path):
     database_path = tmp_path / "state" / "assistant.sqlite3"
     settings = make_settings(database_path)
@@ -119,3 +136,24 @@ def test_configure_job_schedule_registers_polling_and_daily_agenda_jobs(tmp_path
     assert job_scheduler.jobs[2][2]["seconds"] == settings.calendar_poll_interval_seconds
     assert job_scheduler.jobs[3][2]["hour"] == 8
     assert job_scheduler.jobs[3][2]["minute"] == 0
+
+
+def test_build_components_wires_multiuser_oauth_runtime_dependencies(tmp_path):
+    settings = make_multiuser_settings(tmp_path / "assistant.sqlite3")
+    command_calls = []
+
+    def fake_command_runner(args, *, input_text=None):
+        command_calls.append((args, input_text))
+        return {"messages": []}
+
+    components = build_components(
+        settings,
+        telegram_gateway=FakeTelegramGateway(),
+        command_runner=fake_command_runner,
+    )
+
+    assert components.oauth_service is not None
+    assert components.oauth_app is not None
+    assert components.scheduler.multiuser_enabled is True
+    assert components.scheduler.store is components.store
+    assert command_calls == []

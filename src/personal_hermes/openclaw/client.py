@@ -15,7 +15,12 @@ JsonValue = dict[str, Any] | list[Any]
 
 
 class CommandRunner(Protocol):
-    def __call__(self, args: list[str], *, input_text: str | None = None) -> JsonValue:
+    def __call__(
+        self,
+        args: list[str],
+        *,
+        input_text: str | None = None,
+    ) -> JsonValue:
         ...
 
 
@@ -31,12 +36,14 @@ class OpenClawClient:
         executable: str = "gog",
         account: str | None = None,
         client: str | None = None,
+        access_token: str | None = None,
         inbox_limit: int = 25,
     ) -> None:
         self._command_runner = command_runner or self._run_json_command
         self._executable = executable
         self._account = account
         self._client = client
+        self._access_token = access_token
         self._inbox_limit = inbox_limit
 
     def list_new_inbox_messages(self, since_cursor: str | None) -> list[EmailMessage]:
@@ -72,6 +79,16 @@ class OpenClawClient:
             self._map_calendar_event(item)
             for item in self._items(payload, "events")
         ]
+
+    def with_access_token(self, access_token: str | None) -> "OpenClawClient":
+        return OpenClawClient(
+            command_runner=self._command_runner,
+            executable=self._executable,
+            account=self._account,
+            client=self._client,
+            access_token=access_token,
+            inbox_limit=self._inbox_limit,
+        )
 
     def _run(self, args: list[str], *, input_text: str | None = None) -> JsonValue:
         return self._command_runner(args, input_text=input_text)
@@ -161,6 +178,8 @@ class OpenClawClient:
             args.extend(["--account", self._account])
         if self._client:
             args.extend(["--client", self._client])
+        if self._access_token:
+            args.extend(["--access-token", self._access_token])
         return args
 
     @staticmethod

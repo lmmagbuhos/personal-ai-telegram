@@ -198,6 +198,48 @@ Reminder: <event title> starts in 30 minutes
 
 Press `Ctrl+C` in the assistant terminal.
 
+## 11. Multiuser Migration and OAuth Onboarding Smoke
+
+If the deployment enables `MULTIUSER_ENABLED=true`, run these checks after the normal smoke test:
+
+1. Back up the current database:
+
+```bash
+cp "${SQLITE_DATABASE_PATH}" "${SQLITE_DATABASE_PATH}.backup"
+```
+
+2. Start the assistant with OAuth settings and a reachable `PUBLIC_BASE_URL`:
+
+```bash
+export PUBLIC_BASE_URL="https://your-public-domain.example.com"
+export GOOGLE_OAUTH_CLIENT_ID="..."
+export GOOGLE_OAUTH_CLIENT_SECRET="..."
+export TOKEN_ENCRYPTION_KEY="..."
+export MULTIUSER_ENABLED=true
+python -m personal_hermes --run
+```
+
+3. In Telegram, send `/connect`.
+   - The bot must return a Google authorization link.
+   - Complete the OAuth flow in your browser.
+   - Ensure Telegram receives **“Google connected.”**
+
+4. Send `/status`.
+   - You should see `Connected to Google as ...`.
+
+5. Confirm migration landed:
+
+```bash
+sqlite3 "$SQLITE_DATABASE_PATH" "PRAGMA user_version;"
+sqlite3 "$SQLITE_DATABASE_PATH" "PRAGMA table_info(seen_emails);"
+sqlite3 "$SQLITE_DATABASE_PATH" "SELECT id, telegram_user_id, telegram_chat_id FROM users;"
+```
+
+Expected:
+
+- `user_version` is `2`.
+- `seen_emails` shows a `user_id` column.
+
 ## Notes
 
 - Full email bodies should not be printed to logs by default.

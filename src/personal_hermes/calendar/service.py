@@ -34,20 +34,47 @@ class CalendarService:
         workday_start: str,
         workday_end: str,
         min_free_block_minutes: int,
+        resolve_access_token=None,
     ) -> None:
         self.openclaw_client = openclaw_client
+        self.resolve_access_token = resolve_access_token
         self.timezone = timezone
         self.workday_start = workday_start
         self.workday_end = workday_end
         self.min_free_block_minutes = min_free_block_minutes
 
-    def availability_for(self, text: str, *, today: date) -> AvailabilityResult:
+    def availability_for(self, text: str, *, today: date, user_id: int | None = None) -> AvailabilityResult:
+        return self._availability_for(text, today=today, user_id=user_id)
+
+    def _availability_for(
+        self,
+        text: str,
+        *,
+        today: date,
+        user_id: int | None = None,
+    ) -> AvailabilityResult:
         start_date, end_date = parse_date_range(text, today=today)
         start_at = datetime.combine(start_date, time.min, tzinfo=self.timezone)
         end_at = datetime.combine(
             end_date + timedelta(days=1), time.min, tzinfo=self.timezone
         )
-        events = self.openclaw_client.list_calendar_events(
+        openclaw_client = self.openclaw_client
+        if self.resolve_access_token is not None and user_id is not None:
+            try:
+                access_token = self.resolve_access_token(user_id, now=datetime.now(tz=UTC))
+            except TypeError:
+                access_token = self.resolve_access_token(user_id)
+
+            if access_token is None:
+                return AvailabilityResult(
+                    fully_available=[],
+                    partly_available=[],
+                    busy=[],
+                )
+
+            if hasattr(openclaw_client, "with_access_token"):
+                openclaw_client = openclaw_client.with_access_token(access_token)
+        events = openclaw_client.list_calendar_events(
             start_at.astimezone(UTC),
             end_at.astimezone(UTC),
         )
