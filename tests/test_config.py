@@ -8,8 +8,6 @@ REQUIRED_ENV = {
     "TELEGRAM_BOT_TOKEN": "test-telegram-token",
     "TELEGRAM_AUTHORIZED_CHAT_ID": "123456",
     "TELEGRAM_AUTHORIZED_USER_ID": "789012",
-    "OPENCLAW_API_KEY": "test-openclaw-key",
-    "OPENCLAW_BASE_URL": "https://api.example.test",
     "SQLITE_DATABASE_PATH": "var/test.sqlite3",
 }
 
@@ -32,6 +30,9 @@ def test_settings_defaults(monkeypatch):
         "MIN_FREE_BLOCK_MINUTES",
         "TELEGRAM_POLL_INTERVAL_SECONDS",
         "DEBUG_EMAIL_BODY_LOGGING",
+        "GOG_EXECUTABLE",
+        "GOG_ACCOUNT",
+        "GOG_CLIENT",
     ]
     for key in default_keys:
         monkeypatch.delenv(key, raising=False)
@@ -51,14 +52,19 @@ def test_settings_defaults(monkeypatch):
     assert settings.reminder_lead_minutes == 30
     assert settings.pending_reply_expiry_days == 7
     assert settings.debug_email_body_logging is False
+    assert settings.gog_executable == "gog"
+    assert settings.gog_account is None
+    assert settings.gog_client is None
 
 
-def test_openclaw_base_url_must_be_valid_url(monkeypatch):
+def test_settings_do_not_require_openclaw_rest_credentials(monkeypatch):
     set_required_env(monkeypatch)
-    monkeypatch.setenv("OPENCLAW_BASE_URL", "not-a-url")
+    monkeypatch.delenv("OPENCLAW_API_KEY", raising=False)
+    monkeypatch.delenv("OPENCLAW_BASE_URL", raising=False)
 
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+    settings = Settings(_env_file=None)
+
+    assert settings.gog_executable == "gog"
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,7 @@
 from datetime import time
 from typing import Annotated
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PositiveInt = Annotated[int, Field(gt=0)]
@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = Field(min_length=1)
     telegram_authorized_chat_id: int
     telegram_authorized_user_id: int
-    openclaw_api_key: str = Field(min_length=1)
-    openclaw_base_url: AnyHttpUrl
     sqlite_database_path: str = Field(min_length=1)
+    gog_executable: str = Field(default="gog", min_length=1)
+    gog_account: str | None = None
+    gog_client: str | None = None
 
     timezone: str = "Asia/Manila"
     workday_start: str = "09:00"
