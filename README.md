@@ -7,7 +7,7 @@ Personal Hermes is a single-user Python assistant that uses Telegram as the chat
 Use Python 3.11 or newer.
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 cp .env.example .env
