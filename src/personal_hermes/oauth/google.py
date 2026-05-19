@@ -11,10 +11,19 @@ from google_auth_oauthlib.flow import Flow
 
 
 GOOGLE_OAUTH_SCOPES = (
+    "openid",
+    "email",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar.events.readonly",
 )
+
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_USERINFO_TIMEOUT_SECONDS = 10.0
+
+
+class GoogleOAuthError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -35,8 +44,8 @@ class GoogleTokenBundle:
 
 
 class GoogleCredentials(Protocol):
-    token: str
-    refresh_token: str
+    token: str | None
+    refresh_token: str | None
     scopes: list[str] | tuple[str, ...] | None
     expiry: datetime | None
 
@@ -87,22 +96,64 @@ class GoogleOAuthService:
         flow.fetch_token(code=code)
 
         credentials = flow.credentials
-        userinfo = self._userinfo_fetcher(credentials.token)
+        access_token = self._require_non_empty_string(
+            credentials.token,
+            "Google OAuth credentials are missing access token",
+        )
+        refresh_token = self._require_non_empty_string(
+            credentials.refresh_token,
+            "Google OAuth credentials are missing refresh token",
+        )
+        granted_scopes = self._granted_scopes(credentials)
+        userinfo = self._userinfo_fetcher(access_token)
+        if not isinstance(userinfo, Mapping):
+            raise GoogleOAuthError("Google userinfo returned malformed payload")
 
-        return GoogleTokenBundle(
-            access_token=credentials.token,
-            refresh_token=credentials.refresh_token,
-            granted_scopes=tuple(credentials.scopes or ()),
-            token_expires_at=credentials.expiry,
-            google_subject=str(userinfo["sub"]),
-            google_email=str(userinfo["email"]),
+        google_subject = self._identity_value(
+            userinfo,
+            "sub",
+            "Google userinfo is missing Google subject",
+        )
+        google_email = self._identity_value(
+            userinfo,
+            "email",
+            "Google userinfo is missing Google email",
         )
 
-    def exchange_callback(self, callback_url: str) -> GoogleTokenBundle:
-        query = parse_qs(urlparse(callback_url).query)
-        code = query.get("code", [None])[0]
-        if code is None:
-            raise ValueError("Google OAuth callback URL is missing code")
+        return GoogleTokenBundle(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            granted_scopes=granted_scopes,
+            token_expires_at=credentials.expiry,
+            google_subject=google_subject,
+            google_email=google_email,
+        )
+
+    def exchange_callback(
+        self,
+        callback_url: str,
+        *,
+        expected_state: str,
+    ) -> GoogleTokenBundle:
+        query = parse_qs(urlparse(callback_url).query, keep_blank_values=True)
+        if "error" in query or "error_description" in query:
+            raise GoogleOAuthError("Google OAuth rejected callback")
+
+        state_values = query.get("state")
+        if not state_values:
+            raise GoogleOAuthError("Google OAuth callback is missing state")
+        if len(state_values) != 1 or state_values[0] != expected_state:
+            raise GoogleOAuthError("Google OAuth callback state mismatch")
+
+        code_values = query.get("code")
+        if not code_values:
+            raise GoogleOAuthError("Google OAuth callback is missing code")
+        if len(code_values) != 1:
+            raise GoogleOAuthError("Google OAuth callback has multiple code values")
+
+        code = code_values[0]
+        if not code.strip():
+            raise GoogleOAuthError("Google OAuth callback has blank code")
 
         return self.exchange_code(code=code)
 
@@ -133,9 +184,61 @@ class GoogleOAuthService:
 
     @staticmethod
     def _fetch_userinfo(access_token: str) -> Mapping[str, Any]:
-        response = httpx.get(
-            "https://openidconnect.googleapis.com/v1/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
+        try:
+            response = httpx.get(
+                GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=GOOGLE_USERINFO_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise GoogleOAuthError("Google userinfo request failed") from exc
+        except httpx.RequestError as exc:
+            raise GoogleOAuthError("Google userinfo request failed") from exc
+        except ValueError as exc:
+            raise GoogleOAuthError("Google userinfo returned malformed JSON") from exc
+
+        if not isinstance(payload, Mapping):
+            raise GoogleOAuthError("Google userinfo returned malformed payload")
+
+        GoogleOAuthService._identity_value(
+            payload,
+            "sub",
+            "Google userinfo is missing Google subject",
         )
-        response.raise_for_status()
-        return response.json()
+        GoogleOAuthService._identity_value(
+            payload,
+            "email",
+            "Google userinfo is missing Google email",
+        )
+        return payload
+
+    @staticmethod
+    def _granted_scopes(credentials: GoogleCredentials) -> tuple[str, ...]:
+        scopes = credentials.scopes
+        if scopes is None:
+            return GOOGLE_OAUTH_SCOPES
+
+        granted_scopes = tuple(
+            scope.strip() for scope in scopes if isinstance(scope, str) and scope.strip()
+        )
+        if not granted_scopes:
+            raise GoogleOAuthError("Google OAuth credentials are missing granted scopes")
+
+        return granted_scopes
+
+    @staticmethod
+    def _identity_value(
+        userinfo: Mapping[str, Any],
+        key: str,
+        error_message: str,
+    ) -> str:
+        value = userinfo.get(key)
+        return GoogleOAuthService._require_non_empty_string(value, error_message)
+
+    @staticmethod
+    def _require_non_empty_string(value: object, error_message: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise GoogleOAuthError(error_message)
+        return value
