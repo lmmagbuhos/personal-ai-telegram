@@ -115,6 +115,10 @@ Implemented:
   - Telegram edit flow to edited Gmail reply.
   - Calendar reminder poll to Telegram reminder.
   - `scripts/run_local_dry_run.py`.
+- Phase 11 smoke-test documentation:
+  - `docs/operations/smoke-test.md`
+  - README link to the smoke-test procedure.
+  - Explicit Google Calendar availability and reminder checks.
 
 ## Verification Performed
 
@@ -161,6 +165,19 @@ Result:
 - `edited_messages=1`
 - `answered_callbacks=1`
 - `sent_replies=1`
+
+Current read-only live Google smoke:
+
+```bash
+set -a; . /home/claude-team/.config/gogcli/keyring.env; set +a
+/home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default calendar events primary --from 2026-05-19T00:00:00+08:00 --to 2026-05-20T00:00:00+08:00 --json --all-pages --no-input
+/home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default gmail messages search in:inbox --json --max 1 --no-input
+```
+
+Result:
+
+- Calendar returned `2` events.
+- Gmail returned `1` inbox message.
 
 Current app config smoke:
 

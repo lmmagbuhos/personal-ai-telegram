@@ -20,3 +20,21 @@ Edit `.env` with the Telegram, OpenClaw, and local database settings for the ser
 ```bash
 python -m pytest
 ```
+
+## Run
+
+Check local configuration:
+
+```bash
+python -m personal_hermes --check-config
+```
+
+Start the polling runtime:
+
+```bash
+python -m personal_hermes --run
+```
+
+For live Telegram, Gmail, and Google Calendar validation, follow:
+
+- `docs/operations/smoke-test.md`
