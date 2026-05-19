@@ -1,3 +1,41 @@
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_user_id INTEGER NOT NULL,
+    telegram_chat_id INTEGER NOT NULL,
+    display_name TEXT,
+    username TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'active', 'revoked', 'disabled')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (telegram_user_id, telegram_chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_sessions (
+    state TEXT PRIMARY KEY,
+    telegram_user_id INTEGER NOT NULL,
+    telegram_chat_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS google_accounts (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    google_subject TEXT NOT NULL,
+    google_email TEXT NOT NULL,
+    encrypted_access_token TEXT NOT NULL,
+    encrypted_refresh_token TEXT NOT NULL,
+    granted_scopes TEXT NOT NULL,
+    token_expires_at TEXT,
+    status TEXT NOT NULL CHECK (
+        status IN ('active', 'reauth_required', 'revoked')
+    ),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS seen_emails (
     email_id TEXT PRIMARY KEY,
     thread_id TEXT NOT NULL,

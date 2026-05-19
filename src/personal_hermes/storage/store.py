@@ -6,6 +6,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from personal_hermes.users import GoogleAccount, OAuthSession, User
+
 
 @dataclass(frozen=True)
 class PendingReply:
@@ -36,6 +38,251 @@ class StateStore:
         schema = resources.files("personal_hermes.storage").joinpath("schema.sql")
         with self._connect() as connection:
             connection.executescript(schema.read_text(encoding="utf-8"))
+
+    def upsert_user_from_telegram(
+        self,
+        *,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+        display_name: str | None,
+        username: str | None,
+        now: datetime,
+    ) -> User:
+        timestamp = self._datetime_to_text(now)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO users (
+                    telegram_user_id,
+                    telegram_chat_id,
+                    display_name,
+                    username,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT(telegram_user_id, telegram_chat_id) DO UPDATE SET
+                    telegram_chat_id = excluded.telegram_chat_id,
+                    display_name = excluded.display_name,
+                    username = excluded.username,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    telegram_user_id,
+                    telegram_chat_id,
+                    display_name,
+                    username,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE telegram_user_id = ? AND telegram_chat_id = ?
+                """,
+                (telegram_user_id, telegram_chat_id),
+            ).fetchone()
+
+        if row is None:
+            raise RuntimeError("User upsert did not return a row")
+        return self._user_from_row(row)
+
+    def get_user_by_telegram(
+        self,
+        *,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+    ) -> User | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE telegram_user_id = ? AND telegram_chat_id = ?
+                """,
+                (telegram_user_id, telegram_chat_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return self._user_from_row(row)
+
+    def activate_user(self, user_id: int, now: datetime) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE users
+                SET status = 'active',
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (self._datetime_to_text(now), user_id),
+            )
+            return cursor.rowcount == 1
+
+    def list_active_google_users(self) -> list[User]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT users.*
+                FROM users
+                INNER JOIN google_accounts ON google_accounts.user_id = users.id
+                WHERE users.status = 'active'
+                    AND google_accounts.status = 'active'
+                ORDER BY users.id
+                """
+            ).fetchall()
+        return [self._user_from_row(row) for row in rows]
+
+    def create_oauth_session(
+        self,
+        *,
+        state: str,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+        expires_at: datetime,
+        created_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO oauth_sessions (
+                    state,
+                    telegram_user_id,
+                    telegram_chat_id,
+                    expires_at,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    state,
+                    telegram_user_id,
+                    telegram_chat_id,
+                    self._datetime_to_text(expires_at),
+                    self._datetime_to_text(created_at),
+                ),
+            )
+
+    def consume_oauth_session(
+        self,
+        state: str,
+        now: datetime,
+    ) -> OAuthSession | None:
+        timestamp = self._datetime_to_text(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM oauth_sessions WHERE state = ?",
+                (state,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            session = self._oauth_session_from_row(row)
+            if session.used_at is not None or session.expires_at <= now:
+                return None
+
+            connection.execute(
+                """
+                UPDATE oauth_sessions
+                SET used_at = ?
+                WHERE state = ?
+                """,
+                (timestamp, state),
+            )
+
+        return OAuthSession(
+            state=session.state,
+            telegram_user_id=session.telegram_user_id,
+            telegram_chat_id=session.telegram_chat_id,
+            expires_at=session.expires_at,
+            used_at=now,
+            created_at=session.created_at,
+        )
+
+    def save_google_account(
+        self,
+        *,
+        user_id: int,
+        google_subject: str,
+        google_email: str,
+        encrypted_access_token: str,
+        encrypted_refresh_token: str,
+        granted_scopes: tuple[str, ...],
+        token_expires_at: datetime | None,
+        now: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO google_accounts (
+                    user_id,
+                    google_subject,
+                    google_email,
+                    encrypted_access_token,
+                    encrypted_refresh_token,
+                    granted_scopes,
+                    token_expires_at,
+                    status,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    google_subject = excluded.google_subject,
+                    google_email = excluded.google_email,
+                    encrypted_access_token = excluded.encrypted_access_token,
+                    encrypted_refresh_token = excluded.encrypted_refresh_token,
+                    granted_scopes = excluded.granted_scopes,
+                    token_expires_at = excluded.token_expires_at,
+                    status = 'active',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    google_subject,
+                    google_email,
+                    encrypted_access_token,
+                    encrypted_refresh_token,
+                    json.dumps(list(granted_scopes)),
+                    self._optional_datetime_to_text(token_expires_at),
+                    self._datetime_to_text(now),
+                    self._datetime_to_text(now),
+                ),
+            )
+
+    def get_google_account(self, user_id: int) -> GoogleAccount | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM google_accounts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return self._google_account_from_row(row)
+
+    def mark_google_account_status(
+        self,
+        user_id: int,
+        status: str,
+        now: datetime,
+    ) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE google_accounts
+                SET status = ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                """,
+                (status, self._datetime_to_text(now), user_id),
+            )
+            return cursor.rowcount == 1
 
     def mark_email_seen(
         self,
@@ -325,6 +572,47 @@ class StateStore:
         return connection
 
     @staticmethod
+    def _user_from_row(row: sqlite3.Row) -> User:
+        return User(
+            id=int(row["id"]),
+            telegram_user_id=int(row["telegram_user_id"]),
+            telegram_chat_id=int(row["telegram_chat_id"]),
+            display_name=row["display_name"],
+            username=row["username"],
+            status=str(row["status"]),
+            created_at=StateStore._text_to_datetime(str(row["created_at"])),
+            updated_at=StateStore._text_to_datetime(str(row["updated_at"])),
+        )
+
+    @staticmethod
+    def _oauth_session_from_row(row: sqlite3.Row) -> OAuthSession:
+        used_at = row["used_at"]
+        return OAuthSession(
+            state=str(row["state"]),
+            telegram_user_id=int(row["telegram_user_id"]),
+            telegram_chat_id=int(row["telegram_chat_id"]),
+            expires_at=StateStore._text_to_datetime(str(row["expires_at"])),
+            used_at=StateStore._optional_text_to_datetime(used_at),
+            created_at=StateStore._text_to_datetime(str(row["created_at"])),
+        )
+
+    @staticmethod
+    def _google_account_from_row(row: sqlite3.Row) -> GoogleAccount:
+        token_expires_at = row["token_expires_at"]
+        return GoogleAccount(
+            user_id=int(row["user_id"]),
+            google_subject=str(row["google_subject"]),
+            google_email=str(row["google_email"]),
+            encrypted_access_token=str(row["encrypted_access_token"]),
+            encrypted_refresh_token=str(row["encrypted_refresh_token"]),
+            granted_scopes=tuple(json.loads(str(row["granted_scopes"]))),
+            token_expires_at=StateStore._optional_text_to_datetime(token_expires_at),
+            status=str(row["status"]),
+            created_at=StateStore._text_to_datetime(str(row["created_at"])),
+            updated_at=StateStore._text_to_datetime(str(row["updated_at"])),
+        )
+
+    @staticmethod
     def _pending_reply_from_row(row: sqlite3.Row) -> PendingReply:
         return PendingReply(
             id=int(row["id"]),
@@ -342,5 +630,17 @@ class StateStore:
         return value.isoformat()
 
     @staticmethod
+    def _optional_datetime_to_text(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        return StateStore._datetime_to_text(value)
+
+    @staticmethod
     def _text_to_datetime(value: str) -> datetime:
         return datetime.fromisoformat(value)
+
+    @staticmethod
+    def _optional_text_to_datetime(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        return StateStore._text_to_datetime(str(value))
