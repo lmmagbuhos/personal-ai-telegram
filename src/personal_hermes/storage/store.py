@@ -568,6 +568,7 @@ class StateStore:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
         return connection
 

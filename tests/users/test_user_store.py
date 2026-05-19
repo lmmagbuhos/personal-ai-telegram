@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from personal_hermes.storage.store import StateStore
 
 
@@ -150,6 +152,24 @@ def test_save_and_get_google_account_roundtrip(tmp_path):
     assert account.status == "active"
     assert account.created_at == now
     assert account.updated_at == now
+
+
+def test_save_google_account_for_missing_user_raises_integrity_error(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    store.initialize()
+    now = datetime(2026, 5, 19, 8, 0, tzinfo=UTC)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.save_google_account(
+            user_id=999,
+            google_subject="google-subject",
+            google_email="missing@example.com",
+            encrypted_access_token="access-token",
+            encrypted_refresh_token="refresh-token",
+            granted_scopes=("email",),
+            token_expires_at=None,
+            now=now,
+        )
 
 
 def test_mark_google_account_status_updates_status(tmp_path):

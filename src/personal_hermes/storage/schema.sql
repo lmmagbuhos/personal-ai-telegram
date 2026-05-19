@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS oauth_sessions (
 );
 
 CREATE TABLE IF NOT EXISTS google_accounts (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE RESTRICT,
     google_subject TEXT NOT NULL,
     google_email TEXT NOT NULL,
     encrypted_access_token TEXT NOT NULL,
