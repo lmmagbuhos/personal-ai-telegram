@@ -8,9 +8,9 @@ No GitHub push was performed.
 
 ## Summary
 
-Implementation started from the approved design and phase plan. Phase 0 was completed and approved after review fixes. Phase 1 produced useful OpenClaw boundary code and tests. After the initial report, the OpenClaw Google Workspace `gog` capability was installed and the adapter contract was updated from local `gog --help` output.
+Implementation started from the approved design and phase plan. The app now has the main single-user pipeline pieces in place: OpenClaw `gog` access, SQLite state, Telegram polling adapter, Gmail notifications with inline reply actions, calendar availability, daily agenda/reminder jobs, assistant routing, scheduler jobs, and the app entrypoint/runtime wiring.
 
-Work remains blocked from real Gmail/Calendar smoke testing until OAuth credentials and the target Google account are configured in `gog`.
+OAuth for `lmmagbuhos@oakdriveventures.com` is configured in `gog`, and read-only Gmail and Calendar smoke checks have passed. No GitHub push was performed.
 
 ## Achieved
 
@@ -55,13 +55,12 @@ Review result:
 
 ### Phase 1: OpenClaw Boundary Investigation And Adapter Draft
 
-Partially implemented, pending OAuth credential verification.
+Implemented and smoke-tested for read access.
 
 Commits:
 
 - `a77a024 feat: add OpenClaw client contract`
 - `ee4a1c4 fix: use gog cli adapter for openclaw phase 1`
-- pending current changes: installed `gog` locally and updated command contract from verified help output
 
 Implemented:
 
@@ -76,12 +75,38 @@ Implemented:
 - Installed `gog` v0.17.0 to `~/.local/bin/gog`.
 - Installed the OpenClaw `gog` skill wrapper to `~/.openclaw/plugin-skills/gog`.
 - Verified local command grammar with `gog --help`, `gog gmail messages search --help`, `gog gmail get --help`, `gog gmail send --help`, `gog gmail mark-read --help`, and `gog calendar events --help`.
+- Configured OAuth for `lmmagbuhos@oakdriveventures.com`.
+- Verified `gog auth doctor --check`.
+- Verified Gmail read and Calendar read smoke checks.
 
 Current review result:
 
 - Tests pass.
 - Exact command grammar is now locally verified.
-- Runtime auth behavior is not verified because `gog` has no OAuth credentials configured yet.
+- Runtime auth behavior is verified for read operations.
+
+### Subsequent Implementation Slices
+
+Implemented:
+
+- SQLite state store for seen emails, pending replies, reply audit logs, daily agenda dedupe, reminder dedupe, and edit conversation state.
+- Telegram Bot API polling adapter with single-user chat/user authorization and inline keyboard formatting.
+- Calendar availability service for "available/free/this week/today/tomorrow" style questions.
+- Calendar daily agenda and 30-minute reminder notification service.
+- Gmail polling service that notifies every newly seen inbox email.
+- Deterministic email summarizer and suggested reply generator.
+- Inline email reply actions:
+  - send suggested reply,
+  - edit suggested reply in Telegram,
+  - ignore,
+  - mark read.
+- Assistant router connecting Telegram messages/callbacks to calendar and email actions.
+- Scheduler job coordinator for one-shot Gmail polling, Telegram polling, daily agenda, and calendar reminders.
+- App entrypoint/runtime wiring:
+  - `python -m personal_hermes --check-config`
+  - `python -m personal_hermes --run`
+  - APScheduler registration for Telegram polling, Gmail polling, calendar reminder polling, and daily agenda cron.
+- Optional `GOG_ACCOUNT` and `GOG_CLIENT` settings are now passed through to `gog` commands as global flags.
 
 ## Verification Performed
 
@@ -104,6 +129,36 @@ Post-install verification:
 Result:
 
 - `5 passed in 0.04s`
+
+Current full-suite verification:
+
+```bash
+. .venv/bin/activate && python -m pytest -q
+```
+
+Result:
+
+- `79 passed in 3.00s`
+
+Current app config smoke:
+
+```bash
+. .venv/bin/activate && TELEGRAM_BOT_TOKEN=test-token TELEGRAM_AUTHORIZED_CHAT_ID=123 TELEGRAM_AUTHORIZED_USER_ID=456 SQLITE_DATABASE_PATH=/tmp/personal-hermes-check.sqlite3 GOG_EXECUTABLE=/home/claude-team/.local/bin/gog python -m personal_hermes --check-config
+```
+
+Result:
+
+- `Configuration OK`
+
+Current `gog` account/client flag smoke:
+
+```bash
+set -a; . /home/claude-team/.config/gogcli/keyring.env; set +a; /home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default auth doctor --check
+```
+
+Result:
+
+- `status ok`
 
 Runtime dependency check:
 
@@ -141,47 +196,15 @@ Original head at report creation:
 
 ## Missing Or Blocked
 
-### Critical Blocker
+### Still Missing
 
-OpenClaw Google Workspace OAuth is not configured.
-
-Missing:
-
-- Google OAuth client credentials.
-- `gog auth credentials set <credentials>` completed with the OAuth client file.
-- `gog auth add <email> --services gmail,calendar` completed for the target account.
-- `gog auth doctor --check` passing.
-- Real smoke checks for Gmail search/get/mark-read/send and Calendar event listing.
-
-Impact:
-
-- Phase 1 command grammar is no longer blocked by a missing binary.
-- Real Gmail/Calendar functionality remains unproven until OAuth is configured.
-
-### Not Yet Implemented
-
-The following planned phases have not been implemented:
-
-- Phase 2: SQLite state store.
-- Phase 3: Telegram adapter and authorization.
-- Phase 4: calendar availability service.
-- Phase 5: daily agenda and 30-minute reminder polling.
-- Phase 6: Gmail polling and notifications.
-- Phase 7: email reply approval and edit flow.
-- Phase 8: assistant router.
-- Phase 9: scheduler and app entrypoint.
-- Phase 10: local dry-run pipeline.
-- Phase 11: real credential smoke test.
-- Phase 12: server runbook.
+- Telegram bot token/chat/user live smoke test.
+- Controlled live send-reply test through Gmail.
+- Controlled live mark-read test through Gmail.
+- Full end-to-end dry run with real Telegram updates and real Gmail/Calendar data.
+- Server runbook/service manager configuration for keeping `python -m personal_hermes --run` alive.
+- Production logging/error reporting policy.
 
 ## Recommended Next Step
 
-Configure OAuth for the target Google account:
-
-```bash
-gog auth credentials set /path/to/client_secret.json
-gog auth add you@gmail.com --services gmail,calendar
-gog auth doctor --check
-```
-
-After OAuth is configured, run controlled smoke tests and then continue with Phase 2.
+Run the Telegram live smoke test next, then perform a controlled Gmail mark-read/send-reply test before installing the runtime as a long-running service.

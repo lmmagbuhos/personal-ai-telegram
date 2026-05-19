@@ -29,10 +29,14 @@ class OpenClawClient:
         *,
         command_runner: CommandRunner | None = None,
         executable: str = "gog",
+        account: str | None = None,
+        client: str | None = None,
         inbox_limit: int = 25,
     ) -> None:
         self._command_runner = command_runner or self._run_json_command
         self._executable = executable
+        self._account = account
+        self._client = client
         self._inbox_limit = inbox_limit
 
     def list_new_inbox_messages(self, since_cursor: str | None) -> list[EmailMessage]:
@@ -77,8 +81,7 @@ class OpenClawClient:
         if since_cursor:
             query = f"{query} {since_cursor}"
 
-        return [
-            self._executable,
+        return self._base_args() + [
             "gmail",
             "messages",
             "search",
@@ -93,8 +96,7 @@ class OpenClawClient:
         ]
 
     def _get_email_args(self, email_id: str) -> list[str]:
-        return [
-            self._executable,
+        return self._base_args() + [
             "gmail",
             "get",
             email_id,
@@ -106,8 +108,7 @@ class OpenClawClient:
         ]
 
     def _send_reply_args(self, request: SendEmailReplyRequest) -> list[str]:
-        args = [
-            self._executable,
+        args = self._base_args() + [
             "gmail",
             "send",
             "--thread-id",
@@ -130,8 +131,7 @@ class OpenClawClient:
         return args
 
     def _mark_email_read_args(self, email_id: str) -> list[str]:
-        return [
-            self._executable,
+        return self._base_args() + [
             "gmail",
             "mark-read",
             email_id,
@@ -142,8 +142,7 @@ class OpenClawClient:
     def _list_calendar_events_args(
         self, start_at: datetime, end_at: datetime
     ) -> list[str]:
-        return [
-            self._executable,
+        return self._base_args() + [
             "calendar",
             "events",
             "primary",
@@ -155,6 +154,14 @@ class OpenClawClient:
             "--all-pages",
             "--no-input",
         ]
+
+    def _base_args(self) -> list[str]:
+        args = [self._executable]
+        if self._account:
+            args.extend(["--account", self._account])
+        if self._client:
+            args.extend(["--client", self._client])
+        return args
 
     @staticmethod
     def _run_json_command(args: list[str], *, input_text: str | None = None) -> JsonValue:

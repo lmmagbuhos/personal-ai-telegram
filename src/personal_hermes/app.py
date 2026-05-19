@@ -1,0 +1,220 @@
+import argparse
+import shutil
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Protocol
+from zoneinfo import ZoneInfo
+
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+from personal_hermes.calendar.notifications import CalendarNotificationService
+from personal_hermes.calendar.service import CalendarService
+from personal_hermes.config import Settings
+from personal_hermes.mail.actions import MailActionService
+from personal_hermes.mail.service import MailPollingService
+from personal_hermes.openclaw.client import CommandRunner, OpenClawClient
+from personal_hermes.router import AssistantRouter
+from personal_hermes.scheduler import AssistantScheduler
+from personal_hermes.storage.store import StateStore
+from personal_hermes.telegram.adapter import TelegramAdapter, TelegramGateway
+
+
+@dataclass(frozen=True)
+class ConfigCheckResult:
+    ok: bool
+    issues: list[str]
+
+
+@dataclass(frozen=True)
+class AppComponents:
+    settings: Settings
+    store: StateStore
+    openclaw_client: OpenClawClient
+    telegram: TelegramAdapter
+    calendar_service: CalendarService
+    calendar_notifications: CalendarNotificationService
+    mail_polling_service: MailPollingService
+    mail_action_service: MailActionService
+    router: AssistantRouter
+    scheduler: AssistantScheduler
+
+
+ExecutableResolver = Callable[[str], str | None]
+
+
+class JobScheduler(Protocol):
+    def add_job(self, func: Callable[[], None], trigger: str, **kwargs) -> None:
+        ...
+
+
+def check_config(
+    settings: Settings,
+    *,
+    executable_resolver: ExecutableResolver = shutil.which,
+) -> ConfigCheckResult:
+    issues: list[str] = []
+
+    if executable_resolver(settings.gog_executable) is None:
+        issues.append(f"gog executable was not found: {settings.gog_executable}")
+
+    StateStore(settings.sqlite_database_path).initialize()
+
+    return ConfigCheckResult(ok=not issues, issues=issues)
+
+
+def configure_job_schedule(
+    components: AppComponents,
+    job_scheduler: JobScheduler,
+) -> None:
+    settings = components.settings
+    agenda_hour, agenda_minute = _parse_hh_mm(settings.daily_agenda_time)
+
+    job_scheduler.add_job(
+        components.scheduler.run_telegram_poll_job,
+        "interval",
+        id="telegram-poll",
+        seconds=settings.telegram_poll_interval_seconds,
+        max_instances=1,
+        coalesce=True,
+    )
+    job_scheduler.add_job(
+        components.scheduler.run_gmail_poll_job,
+        "interval",
+        id="gmail-poll",
+        seconds=settings.gmail_poll_interval_seconds,
+        max_instances=1,
+        coalesce=True,
+    )
+    job_scheduler.add_job(
+        components.scheduler.run_calendar_reminder_job,
+        "interval",
+        id="calendar-reminders",
+        seconds=settings.calendar_poll_interval_seconds,
+        max_instances=1,
+        coalesce=True,
+    )
+    job_scheduler.add_job(
+        components.scheduler.run_daily_agenda_job,
+        "cron",
+        id="daily-agenda",
+        hour=agenda_hour,
+        minute=agenda_minute,
+        max_instances=1,
+        coalesce=True,
+    )
+
+
+def start_runtime(components: AppComponents) -> None:
+    job_scheduler = BlockingScheduler(timezone=components.settings.timezone)
+    configure_job_schedule(components, job_scheduler)
+    job_scheduler.start()
+
+
+def build_components(
+    settings: Settings,
+    *,
+    telegram_gateway: TelegramGateway | None = None,
+    command_runner: CommandRunner | None = None,
+    now_provider: Callable[[], datetime] | None = None,
+) -> AppComponents:
+    store = StateStore(settings.sqlite_database_path)
+    store.initialize()
+
+    openclaw_client = OpenClawClient(
+        command_runner=command_runner,
+        executable=settings.gog_executable,
+        account=settings.gog_account,
+        client=settings.gog_client,
+    )
+    telegram = TelegramAdapter(
+        bot_token=settings.telegram_bot_token,
+        authorized_chat_id=settings.telegram_authorized_chat_id,
+        authorized_user_id=settings.telegram_authorized_user_id,
+        gateway=telegram_gateway,
+    )
+    calendar_service = CalendarService(
+        openclaw_client=openclaw_client,
+        timezone=ZoneInfo(settings.timezone),
+        workday_start=settings.workday_start,
+        workday_end=settings.workday_end,
+        min_free_block_minutes=settings.min_free_block_minutes,
+    )
+    calendar_notifications = CalendarNotificationService(store)
+    mail_polling_service = MailPollingService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+        authorized_chat_id=settings.telegram_authorized_chat_id,
+        pending_reply_expiry_days=settings.pending_reply_expiry_days,
+    )
+    mail_action_service = MailActionService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+    )
+    router = AssistantRouter(
+        telegram=telegram,
+        calendar_service=calendar_service,
+        mail_action_service=mail_action_service,
+        store=store,
+    )
+    scheduler = AssistantScheduler(
+        mail_polling_service=mail_polling_service,
+        openclaw_client=openclaw_client,
+        calendar_notifications=calendar_notifications,
+        telegram=telegram,
+        router=router,
+        authorized_chat_id=settings.telegram_authorized_chat_id,
+        reminder_lead_minutes=settings.reminder_lead_minutes,
+        telegram_poll_timeout_seconds=settings.telegram_poll_interval_seconds,
+        now_provider=now_provider,
+    )
+
+    return AppComponents(
+        settings=settings,
+        store=store,
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        calendar_service=calendar_service,
+        calendar_notifications=calendar_notifications,
+        mail_polling_service=mail_polling_service,
+        mail_action_service=mail_action_service,
+        router=router,
+        scheduler=scheduler,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="personal-hermes")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check-config",
+        action="store_true",
+        help="validate local configuration and initialize the SQLite database",
+    )
+    mode.add_argument(
+        "--run",
+        action="store_true",
+        help="start the Telegram, Gmail, and Calendar polling runtime",
+    )
+    args = parser.parse_args(argv)
+
+    settings = Settings()
+    if args.check_config:
+        result = check_config(settings)
+        if result.ok:
+            print("Configuration OK")
+            return 0
+        for issue in result.issues:
+            print(f"Configuration issue: {issue}")
+        return 1
+
+    components = build_components(settings)
+    start_runtime(components)
+    return 0
+
+
+def _parse_hh_mm(value: str) -> tuple[int, int]:
+    hour, minute = value.split(":", maxsplit=1)
+    return int(hour), int(minute)
