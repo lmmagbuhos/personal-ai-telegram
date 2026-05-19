@@ -1,10 +1,12 @@
 from datetime import time
 from typing import Annotated
+from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PositiveInt = Annotated[int, Field(gt=0)]
+TcpPort = Annotated[int, Field(ge=1, le=65535)]
 
 
 class Settings(BaseSettings):
@@ -37,7 +39,7 @@ class Settings(BaseSettings):
     invited_telegram_user_ids: str = ""
     oauth_session_ttl_minutes: PositiveInt = 15
     oauth_host: str = "127.0.0.1"
-    oauth_port: PositiveInt = 8080
+    oauth_port: TcpPort = 8080
 
     @property
     def google_oauth_redirect_url(self) -> str | None:
@@ -53,6 +55,39 @@ class Settings(BaseSettings):
             if raw:
                 values.append(int(raw))
         return tuple(values)
+
+    @model_validator(mode="after")
+    def validate_multiuser_oauth_settings(self) -> "Settings":
+        if not self.multiuser_enabled:
+            return self
+
+        missing = [
+            name
+            for name in (
+                "public_base_url",
+                "google_oauth_client_id",
+                "google_oauth_client_secret",
+                "token_encryption_key",
+            )
+            if not getattr(self, name)
+        ]
+        if missing:
+            raise ValueError(
+                "multiuser OAuth settings required when multiuser_enabled is true: "
+                + ", ".join(missing)
+            )
+        return self
+
+    @field_validator("public_base_url")
+    @classmethod
+    def validate_public_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("public_base_url must be an absolute http(s) URL")
+        return value
 
     @field_validator("google_oauth_redirect_path")
     @classmethod

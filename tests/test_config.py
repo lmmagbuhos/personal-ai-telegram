@@ -111,6 +111,38 @@ def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
     assert settings.invited_telegram_user_ids_tuple == (111, 222)
 
 
+@pytest.mark.parametrize(
+    "missing_key",
+    [
+        "PUBLIC_BASE_URL",
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "TOKEN_ENCRYPTION_KEY",
+    ],
+)
+def test_multiuser_enabled_requires_oauth_settings(monkeypatch, missing_key):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("MULTIUSER_ENABLED", "true")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://hermes.example.com")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "a" * 44)
+    monkeypatch.delenv(missing_key)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_public_base_url_must_be_absolute_http_url(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("PUBLIC_BASE_URL", "not-a-url")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_blank_optional_env_file_values_use_defaults(monkeypatch, tmp_path):
     clear_optional_env(monkeypatch)
     for key in REQUIRED_ENV:
@@ -154,6 +186,15 @@ def test_google_oauth_redirect_path_must_start_with_slash(monkeypatch):
     clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
     monkeypatch.setenv("GOOGLE_OAUTH_REDIRECT_PATH", "oauth/google/callback")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_oauth_port_must_not_exceed_tcp_port_range(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("OAUTH_PORT", "65536")
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
