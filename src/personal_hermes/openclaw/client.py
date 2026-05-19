@@ -1,10 +1,9 @@
-import base64
+import json
+import subprocess
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from email.message import EmailMessage as MimeEmailMessage
-from email.utils import formataddr, getaddresses, parsedate_to_datetime
-from typing import Any
-
-import httpx
+from email.utils import formataddr, getaddresses
+from typing import Any, Protocol
 
 from personal_hermes.openclaw.types import (
     CalendarEvent,
@@ -12,227 +11,345 @@ from personal_hermes.openclaw.types import (
     SendEmailReplyRequest,
 )
 
+JsonValue = dict[str, Any] | list[Any]
+
+
+class CommandRunner(Protocol):
+    def __call__(self, args: list[str], *, input_text: str | None = None) -> JsonValue:
+        ...
+
+
+class OpenClawCommandError(RuntimeError):
+    pass
+
 
 class OpenClawClient:
     def __init__(
         self,
-        access_token: str,
         *,
-        http_client: httpx.Client | None = None,
-        gmail_base_url: str = "https://gmail.googleapis.com/gmail/v1",
-        calendar_base_url: str = "https://www.googleapis.com/calendar/v3",
-        inbox_max_results: int = 25,
-        calendar_id: str = "primary",
+        command_runner: CommandRunner | None = None,
+        executable: str = "gog",
+        inbox_limit: int = 25,
     ) -> None:
-        self._access_token = access_token
-        self._http_client = http_client or httpx.Client(timeout=30)
-        self._gmail_base_url = gmail_base_url.rstrip("/")
-        self._calendar_base_url = calendar_base_url.rstrip("/")
-        self._inbox_max_results = inbox_max_results
-        self._calendar_id = calendar_id
+        self._command_runner = command_runner or self._run_json_command
+        self._executable = executable
+        self._inbox_limit = inbox_limit
 
     def list_new_inbox_messages(self, since_cursor: str | None) -> list[EmailMessage]:
-        query = "in:inbox is:unread"
-        if since_cursor:
-            query = f"{query} after:{since_cursor}"
-
-        payload = self._request_json(
-            "GET",
-            f"{self._gmail_base_url}/users/me/messages",
-            params={"q": query, "maxResults": self._inbox_max_results},
-        )
-
+        payload = self._run(self._list_inbox_args(since_cursor))
         return [
-            self.get_email_message(message["id"])
-            for message in payload.get("messages", [])
-            if message.get("id")
+            self._map_email_message(item)
+            for item in self._items(payload, "messages")
         ]
 
     def get_email_message(self, email_id: str) -> EmailMessage:
-        payload = self._request_json(
-            "GET",
-            f"{self._gmail_base_url}/users/me/messages/{email_id}",
-            params={"format": "full"},
-        )
+        payload = self._run(self._get_email_args(email_id))
+        if not isinstance(payload, dict):
+            raise OpenClawCommandError("gog email get returned a non-object JSON value")
         return self._map_email_message(payload)
 
     def send_thread_reply(self, request: SendEmailReplyRequest) -> str:
-        raw_message = self._build_reply_raw_message(request)
-        payload = self._request_json(
-            "POST",
-            f"{self._gmail_base_url}/users/me/messages/send",
-            json={"raw": raw_message, "threadId": request.thread_id},
+        payload = self._run(
+            self._send_reply_args(),
+            input_text=json.dumps(
+                {
+                    "thread_id": request.thread_id,
+                    "to": list(request.to),
+                    "cc": list(request.cc),
+                    "bcc": list(request.bcc),
+                    "subject": request.subject,
+                    "body_text": request.body_text,
+                    "in_reply_to": request.in_reply_to,
+                    "references": list(request.references),
+                }
+            ),
         )
-        return payload["id"]
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise OpenClawCommandError("gog reply returned no sent message id")
+        return str(payload["id"])
 
     def mark_email_read(self, email_id: str) -> None:
-        self._request_json(
-            "POST",
-            f"{self._gmail_base_url}/users/me/messages/{email_id}/modify",
-            json={"removeLabelIds": ["UNREAD"]},
-        )
+        self._run(self._mark_email_read_args(email_id))
 
     def list_calendar_events(
         self, start_at: datetime, end_at: datetime
     ) -> list[CalendarEvent]:
-        payload = self._request_json(
-            "GET",
-            f"{self._calendar_base_url}/calendars/{self._calendar_id}/events",
-            params={
-                "timeMin": start_at.isoformat(),
-                "timeMax": end_at.isoformat(),
-                "singleEvents": "true",
-                "orderBy": "startTime",
-            },
-        )
-        return [self._map_calendar_event(item) for item in payload.get("items", [])]
+        payload = self._run(self._list_calendar_events_args(start_at, end_at))
+        return [
+            self._map_calendar_event(item)
+            for item in self._items(payload, "events")
+        ]
+
+    def _run(self, args: list[str], *, input_text: str | None = None) -> JsonValue:
+        return self._command_runner(args, input_text=input_text)
+
+    def _list_inbox_args(self, since_cursor: str | None) -> list[str]:
+        args = [
+            self._executable,
+            "gmail",
+            "messages",
+            "list",
+            "--inbox",
+            "--unread",
+            "--format",
+            "json",
+            "--limit",
+            str(self._inbox_limit),
+        ]
+        if since_cursor:
+            args.extend(["--since", since_cursor])
+        return args
+
+    def _get_email_args(self, email_id: str) -> list[str]:
+        return [
+            self._executable,
+            "gmail",
+            "messages",
+            "get",
+            email_id,
+            "--format",
+            "json",
+        ]
+
+    def _send_reply_args(self) -> list[str]:
+        return [self._executable, "gmail", "messages", "reply", "--format", "json"]
+
+    def _mark_email_read_args(self, email_id: str) -> list[str]:
+        return [
+            self._executable,
+            "gmail",
+            "messages",
+            "mark-read",
+            email_id,
+            "--format",
+            "json",
+        ]
+
+    def _list_calendar_events_args(
+        self, start_at: datetime, end_at: datetime
+    ) -> list[str]:
+        return [
+            self._executable,
+            "calendar",
+            "events",
+            "list",
+            "--format",
+            "json",
+            "--start",
+            start_at.isoformat(),
+            "--end",
+            end_at.isoformat(),
+        ]
 
     @staticmethod
-    def decode_gmail_raw_message(raw: str) -> str:
-        padded = raw + ("=" * (-len(raw) % 4))
-        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    def _run_json_command(args: list[str], *, input_text: str | None = None) -> JsonValue:
+        try:
+            completed = subprocess.run(
+                args,
+                input=input_text,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise OpenClawCommandError(
+                f"OpenClaw gog CLI executable was not found: {args[0]}"
+            ) from exc
 
-    def _request_json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
-        response = self._http_client.request(
-            method,
-            url,
-            headers={"Authorization": f"Bearer {self._access_token}"},
-            **kwargs,
-        )
-        response.raise_for_status()
-        return response.json()
+        if completed.returncode != 0:
+            raise OpenClawCommandError(completed.stderr.strip() or completed.stdout.strip())
+
+        if not completed.stdout.strip():
+            return {}
+
+        try:
+            decoded = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise OpenClawCommandError("gog returned non-JSON output") from exc
+
+        if not isinstance(decoded, dict | list):
+            raise OpenClawCommandError("gog returned JSON that is not an object or list")
+        return decoded
+
+    @staticmethod
+    def _items(payload: JsonValue, key: str) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        value = payload.get(key) or payload.get("items") or []
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
 
     def _map_email_message(self, payload: dict[str, Any]) -> EmailMessage:
-        headers = self._headers_by_name(payload.get("payload", {}).get("headers", []))
-        sent_at = self._parse_sent_at(headers.get("date"), payload.get("internalDate"))
-
         return EmailMessage(
-            id=payload["id"],
-            thread_id=payload["threadId"],
-            subject=headers.get("subject", ""),
-            sender=headers.get("from", ""),
-            to=self._parse_address_header(headers.get("to", "")),
-            cc=self._parse_address_header(headers.get("cc", "")),
-            sent_at=sent_at,
-            snippet=payload.get("snippet", ""),
-            body_text=self._extract_plain_text(payload.get("payload", {})),
-            is_unread="UNREAD" in payload.get("labelIds", []),
-            message_id=headers.get("message-id"),
-            references=tuple(headers.get("references", "").split()),
+            id=str(payload["id"]),
+            thread_id=str(self._first(payload, "thread_id", "threadId", default="")),
+            subject=str(self._first(payload, "subject", default="")),
+            sender=str(self._first(payload, "sender", "from", default="")),
+            to=self._string_tuple(self._first(payload, "to", default=())),
+            cc=self._string_tuple(self._first(payload, "cc", default=())),
+            sent_at=self._parse_datetime(
+                self._first(payload, "sent_at", "sentAt", "date", default=None)
+            ),
+            snippet=str(self._first(payload, "snippet", default="")),
+            body_text=str(
+                self._first(payload, "body_text", "bodyText", "body", "text", default="")
+            ),
+            is_unread=self._is_unread(payload),
+            message_id=self._optional_string(
+                self._first(payload, "message_id", "messageId", default=None)
+            ),
+            references=self._references_tuple(
+                self._first(payload, "references", default=())
+            ),
         )
 
-    @staticmethod
-    def _headers_by_name(headers: list[dict[str, str]]) -> dict[str, str]:
-        return {
-            header["name"].lower(): header.get("value", "")
-            for header in headers
-            if "name" in header
-        }
+    def _map_calendar_event(self, payload: dict[str, Any]) -> CalendarEvent:
+        start_at, start_all_day, start_timezone = self._calendar_time(payload, "start")
+        end_at, _end_all_day, end_timezone = self._calendar_time(payload, "end")
+
+        return CalendarEvent(
+            id=str(payload["id"]),
+            title=str(self._first(payload, "title", "summary", default="")),
+            start_at=start_at,
+            end_at=end_at,
+            all_day=bool(self._first(payload, "all_day", "allDay", default=start_all_day)),
+            timezone=self._optional_string(
+                self._first(
+                    payload,
+                    "timezone",
+                    "timeZone",
+                    default=start_timezone or end_timezone,
+                )
+            ),
+            location=self._optional_string(self._first(payload, "location", default=None)),
+            description=self._optional_string(
+                self._first(payload, "description", default=None)
+            ),
+            html_link=self._optional_string(
+                self._first(payload, "html_link", "htmlLink", "url", default=None)
+            ),
+            attendees=self._map_attendees(payload.get("attendees", [])),
+        )
+
+    def _calendar_time(
+        self, payload: dict[str, Any], prefix: str
+    ) -> tuple[datetime, bool, str | None]:
+        direct_value = self._first(payload, f"{prefix}_at", f"{prefix}At", default=None)
+        if direct_value:
+            return self._parse_datetime(direct_value), False, None
+
+        nested = payload.get(prefix)
+        if isinstance(nested, dict):
+            if nested.get("dateTime"):
+                return (
+                    self._parse_datetime(nested["dateTime"]),
+                    False,
+                    self._optional_string(nested.get("timeZone")),
+                )
+            if nested.get("date"):
+                return (
+                    datetime.fromisoformat(str(nested["date"])).replace(tzinfo=UTC),
+                    True,
+                    self._optional_string(nested.get("timeZone")),
+                )
+
+        return datetime.now(tz=UTC), False, None
 
     @staticmethod
-    def _parse_address_header(value: str) -> tuple[str, ...]:
-        if not value:
-            return ()
-        addresses = []
-        for name, address in getaddresses([value]):
-            if name and address:
-                addresses.append(formataddr((name, address)))
-            elif address:
-                addresses.append(address)
-        return tuple(addresses)
+    def _first(payload: dict[str, Any], *keys: str, default: Any) -> Any:
+        for key in keys:
+            if key in payload and payload[key] is not None:
+                return payload[key]
+        return default
 
     @staticmethod
-    def _parse_sent_at(date_header: str | None, internal_date: str | None) -> datetime:
-        if date_header:
-            parsed = parsedate_to_datetime(date_header)
+    def _parse_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, int | float):
+            return datetime.fromtimestamp(value, tz=UTC)
+        if isinstance(value, str) and value:
+            normalized = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
             if parsed.tzinfo is None:
                 return parsed.replace(tzinfo=UTC)
             return parsed
-
-        if internal_date:
-            return datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
-
         return datetime.now(tz=UTC)
 
-    def _extract_plain_text(self, payload: dict[str, Any]) -> str:
-        parts = list(self._walk_message_parts(payload))
-        plain_parts = [
-            self._decode_message_part(part)
-            for part in parts
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data")
-        ]
-        return "\n".join(part for part in plain_parts if part)
-
-    def _walk_message_parts(self, part: dict[str, Any]):
-        yield part
-        for child in part.get("parts", []) or []:
-            yield from self._walk_message_parts(child)
+    @staticmethod
+    def _string_tuple(value: Any) -> tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, str):
+            addresses = []
+            for name, address in getaddresses([value]):
+                if name and address:
+                    addresses.append(formataddr((name, address)))
+                elif address:
+                    addresses.append(address)
+            return tuple(addresses) if addresses else (value,)
+        if isinstance(value, Sequence):
+            return tuple(str(item) for item in value if item)
+        return (str(value),)
 
     @staticmethod
-    def _decode_message_part(part: dict[str, Any]) -> str:
-        data = part.get("body", {}).get("data", "")
-        padded = data + ("=" * (-len(data) % 4))
-        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-
-    def _build_reply_raw_message(self, request: SendEmailReplyRequest) -> str:
-        message = MimeEmailMessage()
-        message["To"] = ", ".join(request.to)
-        if request.cc:
-            message["Cc"] = ", ".join(request.cc)
-        if request.bcc:
-            message["Bcc"] = ", ".join(request.bcc)
-        message["Subject"] = self._reply_subject(request.subject)
-        message["In-Reply-To"] = request.in_reply_to
-        if request.references:
-            message["References"] = " ".join(request.references)
-        message.set_content(request.body_text)
-
-        encoded = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-        return encoded.rstrip("=")
+    def _references_tuple(value: Any) -> tuple[str, ...]:
+        if not value:
+            return ()
+        if isinstance(value, str):
+            return tuple(value.split())
+        if isinstance(value, Sequence):
+            return tuple(str(item) for item in value if item)
+        return (str(value),)
 
     @staticmethod
-    def _reply_subject(subject: str) -> str:
-        if subject.lower().startswith("re:"):
-            return subject
-        return f"Re: {subject}"
-
-    def _map_calendar_event(self, payload: dict[str, Any]) -> CalendarEvent:
-        start_at, start_all_day, start_timezone = self._parse_calendar_time(
-            payload.get("start", {})
-        )
-        end_at, _end_all_day, end_timezone = self._parse_calendar_time(
-            payload.get("end", {})
-        )
-
-        attendees = tuple(
-            (
-                attendee.get("displayName"),
-                attendee.get("email"),
-                attendee.get("responseStatus"),
-            )
-            for attendee in payload.get("attendees", [])
-        )
-
-        return CalendarEvent(
-            id=payload["id"],
-            title=payload.get("summary", ""),
-            start_at=start_at,
-            end_at=end_at,
-            all_day=start_all_day,
-            timezone=start_timezone or end_timezone,
-            location=payload.get("location"),
-            description=payload.get("description"),
-            html_link=payload.get("htmlLink"),
-            attendees=attendees,
-        )
+    def _optional_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
 
     @staticmethod
-    def _parse_calendar_time(value: dict[str, str]) -> tuple[datetime, bool, str | None]:
-        if "dateTime" in value:
-            return datetime.fromisoformat(value["dateTime"]), False, value.get("timeZone")
+    def _is_unread(payload: dict[str, Any]) -> bool:
+        if "is_unread" in payload:
+            return bool(payload["is_unread"])
+        if "unread" in payload:
+            return bool(payload["unread"])
+        labels = payload.get("labels") or payload.get("labelIds") or []
+        return "UNREAD" in labels
 
-        if "date" in value:
-            parsed_date = datetime.fromisoformat(value["date"])
-            return parsed_date.replace(tzinfo=UTC), True, value.get("timeZone")
+    @staticmethod
+    def _map_attendees(
+        value: Any,
+    ) -> tuple[tuple[str | None, str | None, str | None], ...]:
+        if not isinstance(value, list):
+            return ()
 
-        return datetime.now(tz=UTC), False, value.get("timeZone")
+        attendees: list[tuple[str | None, str | None, str | None]] = []
+        for attendee in value:
+            if isinstance(attendee, dict):
+                attendees.append(
+                    (
+                        OpenClawClient._optional_string(
+                            attendee.get("display_name")
+                            or attendee.get("displayName")
+                            or attendee.get("name")
+                        ),
+                        OpenClawClient._optional_string(attendee.get("email")),
+                        OpenClawClient._optional_string(
+                            attendee.get("response_status")
+                            or attendee.get("responseStatus")
+                            or attendee.get("status")
+                        ),
+                    )
+                )
+            elif isinstance(attendee, Sequence) and not isinstance(attendee, str):
+                padded = list(attendee[:3]) + [None, None, None]
+                attendees.append(
+                    (
+                        OpenClawClient._optional_string(padded[0]),
+                        OpenClawClient._optional_string(padded[1]),
+                        OpenClawClient._optional_string(padded[2]),
+                    )
+                )
+        return tuple(attendees)

@@ -4,208 +4,109 @@ Date checked: 2026-05-19
 
 ## Decision
 
-I could not confirm a proprietary OpenClaw REST API for Gmail or Calendar operations.
-The current public OpenClaw docs describe skills as instruction/tool packages, not a
-stable external REST surface. The official Skills page says OpenClaw skills are files
-that teach the assistant which commands to use, and lists the `gog` skill as the
-Google Workspace path for Gmail, Calendar, Drive, and Contacts:
+For this project, OpenClaw Gmail and Calendar access is through the official
+OpenClaw Google Workspace `gog` skill/CLI surface, not direct Google Workspace REST
+calls from application code.
+
+The public OpenClaw docs describe skills as command/tool packages and list Google
+Workspace support through `gog`. Public skill docs indicate `gog` is a CLI for
+Gmail and Calendar operations and can return structured/json output.
+
+References checked:
 
 - https://www.getopenclaw.ai/docs/skills
 - https://www.getopenclaw.ai/integrations/google-calendar
 
-Local inspection found `~/.openclaw` config and gateway state, but no installed
-`gog`, Gmail, Calendar, `claw`, or `gmail-bridge` skill files under the checked local
-paths. The current shell also did not expose `CLAWEMAIL_CREDENTIALS`,
-`OPENCLAW_*`, `GMAIL_*`, or `GOOGLE_*` environment variables. Secrets were not
-recorded here.
+## Local Runtime Status
 
-For Phase 1, `OpenClawClient` is implemented against the confirmed Google
-Workspace REST API shapes used by the OpenClaw/ClawEmail skill path, with a bearer
-token injected into the client. This keeps external mapping isolated so a later
-OpenClaw bridge, `gog` CLI wrapper, or proprietary API can replace the transport
-without changing application services.
+`gog` is not currently installed on `PATH` in this environment. Because of that,
+real credential and smoke testing is blocked until the OpenClaw Google Workspace
+skill and its `gog` CLI are installed and configured here.
 
-## Authentication
+Do not treat the Phase 1 adapter as runtime-complete until `gog --help` and the
+exact Gmail/Calendar subcommands can be verified locally.
 
-Confirmed method for this contract:
+## Adapter Boundary
 
-- HTTP `Authorization: Bearer <access token>`.
-- Access token is injected into `OpenClawClient(access_token=...)`.
-- The client does not read credentials from disk and does not refresh OAuth tokens.
+`OpenClawClient` isolates the OpenClaw dependency behind stable internal types so
+later phases do not depend on CLI response shapes:
 
-Expected OpenClaw/ClawEmail credential helper from public skill leads:
+- `EmailMessage`
+- `CalendarEvent`
+- `SendEmailReplyRequest`
 
-- `CLAWEMAIL_CREDENTIALS`
-- `~/.openclaw/skills/claw/scripts/token.sh`
+Application services should call only these methods:
 
-Those helper files were not present in the local OpenClaw paths checked during this
-phase.
+- `list_new_inbox_messages(since_cursor: str | None) -> list[EmailMessage]`
+- `get_email_message(email_id: str) -> EmailMessage`
+- `send_thread_reply(request: SendEmailReplyRequest) -> str`
+- `mark_email_read(email_id: str) -> None`
+- `list_calendar_events(start_at: datetime, end_at: datetime) -> list[CalendarEvent]`
 
-## Gmail Read
+The client invokes an injectable command runner with argv lists. The default runner
+uses `subprocess.run(...)` without `shell=True`, captures stdout, and parses JSON.
+Tests inject a fake runner so command construction and JSON mapping remain
+maintainable without requiring local OpenClaw credentials.
 
-List inbox/unread messages:
+## Conservative CLI Contract
 
-- Method: `GET`
-- Endpoint: `https://gmail.googleapis.com/gmail/v1/users/me/messages`
-- Query:
-  - `q=in:inbox is:unread`
-  - if `since_cursor` is provided, the client appends `after:<since_cursor>` to the
-    Gmail search query
-  - `maxResults=25`
-- Response: `messages[]` entries contain only `id` and `threadId`, so the client
-  fetches each message with `messages.get`.
+The exact `gog` command grammar has not been verified locally because the binary is
+missing. Phase 1 therefore uses conservative, isolated command names that should be
+confirmed or adjusted after `gog --help` is available:
 
-Fetch message details:
+- `gog gmail messages list --inbox --unread --format json --limit 25 [--since <cursor>]`
+- `gog gmail messages get <email-id> --format json`
+- `gog gmail messages reply --format json`
+- `gog gmail messages mark-read <email-id> --format json`
+- `gog calendar events list --format json --start <iso-datetime> --end <iso-datetime>`
 
-- Method: `GET`
-- Endpoint: `https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}`
-- Query: `format=full`
-- Confirmed fields mapped:
-  - `id`
-  - `threadId`
-  - `labelIds`
-  - `snippet`
-  - `internalDate`
-  - `payload.headers[]`
-  - `payload.parts[]`
-  - `payload.body.data` / nested part `body.data`
+Reply sending passes a structured JSON document to stdin with:
 
-Internal mapping:
+- `thread_id`
+- `to`
+- `cc`
+- `bcc`
+- `subject`
+- `body_text`
+- `in_reply_to`
+- `references`
 
-- `EmailMessage.id` from `id`
-- `EmailMessage.thread_id` from `threadId`
-- `EmailMessage.subject` from `Subject`
-- `EmailMessage.sender` from `From`
-- `EmailMessage.to` from `To`
-- `EmailMessage.cc` from `Cc`
-- `EmailMessage.sent_at` from `Date`, falling back to `internalDate`
-- `EmailMessage.snippet` from `snippet`
-- `EmailMessage.body_text` from decoded `text/plain` MIME part data
-- `EmailMessage.is_unread` from whether `UNREAD` is in `labelIds`
-- `EmailMessage.message_id` from `Message-ID`
-- `EmailMessage.references` from `References`
+If installed `gog` uses different subcommands or payload field names, update only
+`OpenClawClient` command construction and mapping helpers. The rest of the project
+should continue to use the internal dataclasses.
 
-References:
+## Mapping Expectations
 
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages
-
-## Gmail Send Reply
-
-Send message:
-
-- Method: `POST`
-- Endpoint: `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`
-- Body:
-  - `raw`: RFC 2822 email, base64url encoded
-  - `threadId`: Gmail thread ID
-
-Reply headers:
-
-- `To`
-- `Cc` if present
-- `Bcc` if present
-- `Subject`, prefixed with `Re:` if needed
-- `In-Reply-To`
-- `References`
-
-Google documents that adding a message to a thread requires the requested
-`threadId`, RFC 2822 compliant `References` and `In-Reply-To` headers, and matching
-subject headers.
-
-Internal request:
-
-- `SendEmailReplyRequest.thread_id`
-- `SendEmailReplyRequest.to`
-- `SendEmailReplyRequest.subject`
-- `SendEmailReplyRequest.body_text`
-- `SendEmailReplyRequest.in_reply_to`
-- `SendEmailReplyRequest.references`
-- optional `cc` and `bcc`
-
-Return value:
-
-- Sent Gmail message `id`.
-
-References:
-
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages
-
-## Gmail Mark Read
-
-Mark read is a label modification:
-
-- Method: `POST`
-- Endpoint: `https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify`
-- Body: `{"removeLabelIds": ["UNREAD"]}`
-
-Internal result:
-
-- `OpenClawClient.mark_email_read(email_id)` returns `None` after a successful
-  response.
-
-Reference:
-
-- https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/modify
-
-## Calendar List Events
-
-List events:
-
-- Method: `GET`
-- Endpoint: `https://www.googleapis.com/calendar/v3/calendars/primary/events`
-- Query:
-  - `timeMin=<start_at RFC3339>`
-  - `timeMax=<end_at RFC3339>`
-  - `singleEvents=true`
-  - `orderBy=startTime`
-
-Confirmed fields mapped:
+Expected Gmail JSON fields are normalized into `EmailMessage`:
 
 - `id`
-- `summary`
-- `start.dateTime`
-- `start.date`
-- `start.timeZone`
-- `end.dateTime`
-- `end.date`
-- `end.timeZone`
+- `thread_id` or `threadId`
+- `subject`
+- `sender` or `from`
+- `to`
+- `cc`
+- `sent_at` or `sentAt`
+- `snippet`
+- `body_text`, `bodyText`, `body`, or `text`
+- `is_unread`, `unread`, or labels containing `UNREAD`
+- `message_id` or `messageId`
+- `references`
+
+Expected Calendar JSON fields are normalized into `CalendarEvent`:
+
+- `id`
+- `title` or `summary`
+- `start_at` or `startAt`, with fallback to `start.dateTime` / `start.date`
+- `end_at` or `endAt`, with fallback to `end.dateTime` / `end.date`
+- `all_day` or `allDay`, with fallback to date-only start values
+- `timezone` or `timeZone`
 - `location`
 - `description`
-- `htmlLink`
-- `attendees[].displayName`
-- `attendees[].email`
-- `attendees[].responseStatus`
+- `html_link`, `htmlLink`, or `url`
+- `attendees`
 
-Internal mapping:
+## Explicit Non-Goals
 
-- `CalendarEvent.id` from `id`
-- `CalendarEvent.title` from `summary`
-- `CalendarEvent.start_at` from `start.dateTime` or all-day `start.date`
-- `CalendarEvent.end_at` from `end.dateTime` or all-day `end.date`
-- `CalendarEvent.all_day` is true when `start.date` is used
-- `CalendarEvent.timezone` from start/end `timeZone`
-- `CalendarEvent.location` from `location`
-- `CalendarEvent.description` from `description`
-- `CalendarEvent.html_link` from `htmlLink`
-- `CalendarEvent.attendees` from attendee display name, email, and response status
-
-Reference:
-
-- https://developers.google.com/workspace/calendar/api/v3/reference/events/list
-
-## Unsupported Or Unconfirmed
-
-These were not implemented because exact local/current API details were not
-confirmed:
-
-- Proprietary OpenClaw cloud REST endpoints for Gmail/Calendar.
-- `gmail-bridge` HTTP endpoints at `http://127.0.0.1:8787`.
-- Local `gog` CLI command output parsing.
-- OAuth refresh-token handling.
-- Gmail Pub/Sub watch/history flows.
-
-Later phases should depend only on `EmailMessage`, `CalendarEvent`,
-`SendEmailReplyRequest`, and `OpenClawClient` method signatures.
+This phase does not document or implement guessed proprietary REST endpoints. It
+also does not implement direct Google Workspace REST calls, OAuth token refresh,
+Gmail Pub/Sub watch/history flows, or credential discovery.
