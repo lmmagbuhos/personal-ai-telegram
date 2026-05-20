@@ -60,6 +60,76 @@ class CalendarEditService:
         )
         return True
 
+    def handle_callback(self, callback: TelegramCallback, *, user_id, now: datetime) -> None:
+        if self.store is None:
+            self._answer_expired(callback)
+            return
+        state = self.store.get_conversation_state(callback.chat_id, user_id=user_id)
+        if state is None:
+            self._answer_expired(callback)
+            return
+        action, _, value = callback.data.partition(":")
+        if action == "cal_pick":
+            self._pick(callback, state, index=int(value), user_id=user_id, now=now)
+        elif action == "cal_del_ok":
+            self._delete(callback, state, user_id=user_id, now=now)
+        elif action == "cal_del_no":
+            self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+            self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text="Cancelled.")
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
+        else:
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Unsupported action")
+
+    def _pick(self, callback: TelegramCallback, state, *, index: int, user_id, now: datetime) -> None:
+        candidates = state.payload.get("candidates", [])
+        if index < 0 or index >= len(candidates):
+            self._answer_expired(callback)
+            return
+        event = candidates[index]
+        op = state.payload["op"]
+        if op == "cancel":
+            self.store.set_conversation_state(
+                user_id=user_id, telegram_chat_id=callback.chat_id,
+                state="cal_confirm_delete", payload={"op": "cancel", "event": event}, updated_at=now,
+            )
+            self.telegram.edit_message(
+                chat_id=callback.chat_id, message_id=callback.message_id,
+                text=f"Cancel '{event['title']}'?",
+            )
+            self.telegram.send_message(
+                chat_id=callback.chat_id, text="Confirm?",
+                buttons=[[("Confirm cancel", "cal_del_ok"), ("Keep it", "cal_del_no")]],
+            )
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id)
+        else:
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Not supported yet")
+
+    def _delete(self, callback: TelegramCallback, state, *, user_id, now: datetime) -> None:
+        event = state.payload.get("event")
+        if not event:
+            self._answer_expired(callback)
+            return
+        client = self._client_for_user(user_id, now=now)
+        if client is None:
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Connect Google first.")
+            return
+        try:
+            client.delete_calendar_event(event_id=event["id"])
+        except Exception:
+            self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text="Couldn't cancel the event right now.")
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Failed")
+            self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+            return
+        self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+        self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text=f"Cancelled '{event['title']}'.")
+        self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
+
+    def _answer_expired(self, callback: TelegramCallback) -> None:
+        self.telegram.answer_callback(
+            callback_query_id=callback.callback_query_id,
+            text="That selection expired — start again.",
+        )
+
     def _client_for_user(self, user_id, *, now):
         if self.resolve_access_token is None or user_id is None:
             return self.openclaw_client
