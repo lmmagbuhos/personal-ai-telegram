@@ -41,8 +41,8 @@ class FakeClient:
     def with_access_token(self, token):
         return self
 
-    def create_calendar_event(self, *, title, start_at, end_at):
-        self.created.append((title, start_at, end_at))
+    def create_calendar_event(self, *, title, start_at, end_at, timezone):
+        self.created.append((title, start_at, end_at, timezone))
 
         class E:
             id = "evt1"
@@ -128,9 +128,10 @@ def test_create_event_routing_multiuser(tmp_path):
 
     # Assert: the FakeClient recorded the event creation
     assert len(client.created) == 1
-    title, start_at, end_at = client.created[0]
+    title, start_at, end_at, timezone = client.created[0]
     assert title == "dentist"
     assert start_at.hour == 9
     assert start_at.minute == 0
     assert end_at.hour == 9
     assert end_at.minute == 30
+    assert timezone == "Asia/Manila"

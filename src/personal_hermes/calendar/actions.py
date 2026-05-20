@@ -7,7 +7,7 @@ from personal_hermes.telegram.types import TelegramCallback
 
 
 class CalendarWriteClient(Protocol):
-    def create_calendar_event(self, *, title: str, start_at: datetime, end_at: datetime): ...
+    def create_calendar_event(self, *, title: str, start_at: datetime, end_at: datetime, timezone: str): ...
 
 
 class CalendarActionTelegram(Protocol):
@@ -55,7 +55,8 @@ class CalendarActionService:
             return
         try:
             client.create_calendar_event(
-                title=pending.title, start_at=pending.start_at, end_at=pending.end_at)
+                title=pending.title, start_at=pending.start_at, end_at=pending.end_at,
+                timezone=pending.timezone)
         except Exception:
             self.store.mark_pending_calendar_event_failed(pending_id)
             self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id,

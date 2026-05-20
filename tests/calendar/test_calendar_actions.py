@@ -31,8 +31,8 @@ class FakeClient:
         self.created = []
     def with_access_token(self, token):
         return self
-    def create_calendar_event(self, *, title, start_at, end_at):
-        self.created.append((title, start_at, end_at))
+    def create_calendar_event(self, *, title, start_at, end_at, timezone):
+        self.created.append((title, start_at, end_at, timezone))
         class E: id = "evt1"
         return E()
 
@@ -66,6 +66,7 @@ def test_confirm_creates_event_and_marks_created(tmp_path):
     svc.handle_callback(cb, user_id=uid, now=now)
 
     assert client.created and client.created[0][0] == "dentist"
+    assert client.created[0][3] == "Asia/Manila"
     assert store.get_pending_calendar_event(pid, user_id=uid).status == "created"
     assert any("Created" in e for e in tg.edits)
 

@@ -21,6 +21,7 @@ def test_create_calendar_event_builds_gog_args():
         title="dentist",
         start_at=datetime(2026, 5, 20, 9, 0, tzinfo=TZ),
         end_at=datetime(2026, 5, 20, 9, 30, tzinfo=TZ),
+        timezone="Asia/Manila",
     )
 
     args = captured["args"]
@@ -31,6 +32,8 @@ def test_create_calendar_event_builds_gog_args():
     assert "--summary" in args and "dentist" in args
     assert "--from" in args and "2026-05-20T09:00:00+08:00" in args
     assert "--to" in args and "2026-05-20T09:30:00+08:00" in args
-    assert "--start-timezone" in args and "Asia/Manila" in args
+    # Check that --start-timezone is explicitly followed by "Asia/Manila"
+    tz_idx = args.index("--start-timezone")
+    assert args[tz_idx + 1] == "Asia/Manila"
     assert "--no-input" in args and "--json" in args
     assert event.id == "evt123"
