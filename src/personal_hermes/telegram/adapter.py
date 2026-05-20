@@ -31,8 +31,8 @@ class HttpTelegramGateway:
 @dataclass
 class TelegramAdapter:
     bot_token: str
-    authorized_chat_id: int
-    authorized_user_id: int
+    authorized_chat_id: int | None
+    authorized_user_id: int | None
     gateway: TelegramGateway | None = None
     next_update_offset: int | None = None
 
@@ -41,6 +41,8 @@ class TelegramAdapter:
             self.gateway = HttpTelegramGateway(self.bot_token)
 
     def is_authorized(self, event: TelegramMessage | TelegramCallback) -> bool:
+        if self.authorized_chat_id is None or self.authorized_user_id is None:
+            return False
         return (
             event.chat_id == self.authorized_chat_id
             and event.user_id == self.authorized_user_id

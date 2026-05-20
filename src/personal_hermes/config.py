@@ -11,8 +11,8 @@ TcpPort = Annotated[int, Field(ge=1, le=65535)]
 
 class Settings(BaseSettings):
     telegram_bot_token: str = Field(min_length=1)
-    telegram_authorized_chat_id: int
-    telegram_authorized_user_id: int
+    telegram_authorized_chat_id: int | None = None
+    telegram_authorized_user_id: int | None = None
     sqlite_database_path: str = Field(min_length=1)
     gog_executable: str = Field(default="gog", min_length=1)
     gog_account: str | None = None
@@ -57,10 +57,22 @@ class Settings(BaseSettings):
         return tuple(values)
 
     @model_validator(mode="after")
-    def validate_multiuser_oauth_settings(self) -> "Settings":
+    def validate_telegram_and_multiuser_settings(self) -> "Settings":
+        # Single-user mode requires Telegram authorization fields
         if not self.multiuser_enabled:
+            missing = []
+            if self.telegram_authorized_chat_id is None:
+                missing.append("telegram_authorized_chat_id")
+            if self.telegram_authorized_user_id is None:
+                missing.append("telegram_authorized_user_id")
+            if missing:
+                raise ValueError(
+                    "These fields are required in single-user mode: "
+                    + ", ".join(missing)
+                )
             return self
 
+        # Multi-user mode requires OAuth settings
         missing = [
             name
             for name in (
