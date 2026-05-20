@@ -86,11 +86,11 @@ def test_authorization_url_uses_offline_access_and_expected_scopes():
     assert parsed.scheme == "https"
     assert captured["scopes"] == GOOGLE_OAUTH_SCOPES
     assert "openid" in captured["scopes"]
-    assert "email" in captured["scopes"]
+    assert "https://www.googleapis.com/auth/userinfo.email" in captured["scopes"]
     assert "https://www.googleapis.com/auth/gmail.modify" in captured["scopes"]
     assert "https://www.googleapis.com/auth/gmail.send" in captured["scopes"]
     assert (
-        "https://www.googleapis.com/auth/calendar.events.readonly"
+        "https://www.googleapis.com/auth/calendar.readonly"
         in captured["scopes"]
     )
     assert fake_flow.redirect_uri == "https://example.test/oauth/google/callback"
@@ -163,10 +163,10 @@ def test_exchange_code_uses_normalized_actual_granted_scopes():
             FakeCredentials(
                 granted_scopes=[
                     " openid ",
-                    "email",
+                    "https://www.googleapis.com/auth/userinfo.email",
                     "https://www.googleapis.com/auth/gmail.modify",
                     "https://www.googleapis.com/auth/gmail.send",
-                    "https://www.googleapis.com/auth/calendar.events.readonly",
+                    "https://www.googleapis.com/auth/calendar.readonly",
                 ],
             ),
         ),

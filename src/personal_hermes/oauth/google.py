@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,13 +12,17 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
+# Google expands short scope aliases (email -> userinfo.email), reorders them, and may
+# return previously-granted scopes; without this, oauthlib raises on the difference
+# during token exchange.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 GOOGLE_OAUTH_SCOPES = (
     "openid",
-    "email",
+    "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
 )
 
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
@@ -212,7 +217,13 @@ class GoogleOAuthService:
     def _default_flow_factory(
         *, client_config: dict[str, Any], scopes: tuple[str, ...]
     ) -> GoogleFlow:
-        return Flow.from_client_config(client_config, scopes=scopes)
+        # PKCE disabled: this service builds the auth URL and exchanges the code with
+        # two separate Flow instances, so an auto-generated code_verifier can't survive
+        # between them. The web client is confidential (has a secret), so PKCE is
+        # optional; otherwise Google rejects the exchange with "Missing code verifier".
+        return Flow.from_client_config(
+            client_config, scopes=scopes, autogenerate_code_verifier=False
+        )
 
     @staticmethod
     def _fetch_userinfo(access_token: str) -> Mapping[str, Any]:
