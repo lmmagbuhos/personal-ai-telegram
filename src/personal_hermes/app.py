@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.blocking import BlockingScheduler
 import uvicorn
 
+from personal_hermes.calendar.actions import CalendarActionService
 from personal_hermes.calendar.notifications import CalendarNotificationService
 from personal_hermes.calendar.service import CalendarService
 from personal_hermes.config import Settings
@@ -268,6 +269,12 @@ def build_components(
         store=store,
         resolve_access_token=resolve_access_token,
     )
+    calendar_action_service = CalendarActionService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+        resolve_access_token=resolve_access_token,
+    )
     router = AssistantRouter(
         telegram=telegram,
         calendar_service=calendar_service,
@@ -277,6 +284,8 @@ def build_components(
         invite_only=settings.invite_only,
         invited_telegram_user_ids=settings.invited_telegram_user_ids_tuple,
         oauth_session_ttl_minutes=settings.oauth_session_ttl_minutes,
+        calendar_action_service=calendar_action_service,
+        timezone=ZoneInfo(settings.timezone),
     )
     scheduler = AssistantScheduler(
         mail_polling_service=mail_polling_service,

@@ -55,6 +55,8 @@ class AssistantRouter:
         invite_only: bool = True,
         invited_telegram_user_ids: tuple[int, ...] = (),
         oauth_session_ttl_minutes: int = 15,
+        calendar_action_service=None,
+        timezone=None,
     ) -> None:
         self.telegram = telegram
         self.calendar_service = calendar_service
@@ -64,6 +66,8 @@ class AssistantRouter:
         self.invite_only = invite_only
         self.invited_telegram_user_ids = invited_telegram_user_ids
         self.oauth_session_ttl_minutes = oauth_session_ttl_minutes
+        self.calendar_action_service = calendar_action_service
+        self.timezone = timezone
 
     def handle_event(
         self,
@@ -80,6 +84,9 @@ class AssistantRouter:
                 return
 
             if self._handle_edit_flow_message(event, now=now):
+                return
+
+            if self._handle_create_event(event, user_id=None, now=now):
                 return
 
             if _looks_like_availability_question(event.text):
@@ -124,6 +131,9 @@ class AssistantRouter:
             return
 
         if self._handle_edit_flow_message(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_create_event(event, user_id=user.id, now=now):
             return
 
         if _looks_like_availability_question(event.text):
@@ -323,6 +333,10 @@ class AssistantRouter:
             )
             return
 
+        if action in ("cal_confirm", "cal_cancel") and self.calendar_action_service is not None:
+            self.calendar_action_service.handle_callback(callback, user_id=user_id, now=now)
+            return
+
         if user_id is None:
             self.mail_action_service.handle_callback(callback, now=now)
             return
@@ -337,6 +351,36 @@ class AssistantRouter:
             # Backward-compatible fallback for callback handlers that do not yet
             # accept an explicit user_id argument.
             self.mail_action_service.handle_callback(callback, now=now)
+
+    def _handle_create_event(self, event, *, user_id=None, now) -> bool:
+        if (
+            self.calendar_action_service is None
+            or self.store is None
+            or self.timezone is None
+            or not isinstance(event, TelegramMessage)
+        ):
+            return False
+        from personal_hermes.calendar.event_request import parse_event_request
+
+        draft = parse_event_request(event.text, now=now, tz=self.timezone)
+        if draft is None:
+            return False
+        pending_id = self.calendar_action_service.prepare_event(
+            user_id=user_id, draft=draft, telegram_message_id=event.message_id, now=now
+        )
+        start = draft.start_at.strftime("%a %H:%M")
+        end = draft.end_at.strftime("%H:%M")
+        self.telegram.send_message(
+            chat_id=event.chat_id,
+            text=f"Create '{draft.title}' {start}-{end}?",
+            buttons=[
+                [
+                    ("Confirm", f"cal_confirm:{pending_id}"),
+                    ("Cancel", f"cal_cancel:{pending_id}"),
+                ]
+            ],
+        )
+        return True
 
     def _handle_edit_flow_message(
         self,
