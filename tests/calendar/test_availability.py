@@ -3,7 +3,9 @@ from zoneinfo import ZoneInfo
 
 from personal_hermes.calendar.availability import (
     AvailabilityStatus,
+    DaySchedule,
     classify_day,
+    day_schedule,
     free_slots,
     parse_date_range,
 )
@@ -164,4 +166,37 @@ def test_free_slots_ignores_all_day_events():
 
 def test_free_slots_drops_gaps_below_min_block():
     assert fs_slots([fs_ev(9, 30, 10, 0), fs_ev(10, 0, 17, 0)]) == []
+
+
+# day_schedule tests
+def _ds_schedule(events):
+    return day_schedule(
+        target_date=datetime(2026, 5, 21, tzinfo=FS_TZ).date(),
+        events=events, timezone=FS_TZ,
+        workday_start="09:00", workday_end="17:00", min_free_block_minutes=60,
+    )
+
+
+def test_day_schedule_splits_all_day_and_timed_and_sorts():
+    s = _ds_schedule([
+        fs_ev(14, 0, 15, 0, title="late"),
+        fs_ev(9, 0, 9, 30, title="early"),
+        fs_ev(0, 0, 23, 59, all_day=True, title="bday"),
+    ])
+    assert [e.title for e in s.all_day_events] == ["bday"]
+    assert [e.title for e in s.timed_events] == ["early", "late"]
+    assert s.status == AvailabilityStatus.PARTLY_AVAILABLE
+    assert s.free_slots
+
+
+def test_day_schedule_no_timed_events_is_fully_available():
+    s = _ds_schedule([fs_ev(0, 0, 23, 59, all_day=True, title="bday")])
+    assert s.status == AvailabilityStatus.FULLY_AVAILABLE
+    assert s.timed_events == []
+
+
+def test_day_schedule_no_free_slots_is_busy():
+    s = _ds_schedule([fs_ev(9, 0, 17, 0)])
+    assert s.status == AvailabilityStatus.BUSY
+    assert s.free_slots == []
 

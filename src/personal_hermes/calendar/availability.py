@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -149,3 +150,52 @@ def free_slots(
     if work_end - cursor >= threshold:
         slots.append((cursor, work_end))
     return slots
+
+
+@dataclass(frozen=True)
+class DaySchedule:
+    date: date
+    all_day_events: list[CalendarEvent]
+    timed_events: list[CalendarEvent]
+    free_slots: list[tuple[datetime, datetime]]
+    status: AvailabilityStatus
+
+
+def day_schedule(
+    *,
+    target_date: date,
+    events: list[CalendarEvent],
+    timezone: ZoneInfo,
+    workday_start: str,
+    workday_end: str,
+    min_free_block_minutes: int,
+) -> DaySchedule:
+    relevant = [
+        event for event in events if _event_intersects_date(event, target_date, timezone)
+    ]
+    all_day_events = [event for event in relevant if event.all_day]
+    timed_events = sorted(
+        (event for event in relevant if not event.all_day),
+        key=lambda event: event.start_at,
+    )
+    slots = free_slots(
+        target_date=target_date,
+        events=timed_events,
+        timezone=timezone,
+        workday_start=workday_start,
+        workday_end=workday_end,
+        min_free_block_minutes=min_free_block_minutes,
+    )
+    if not timed_events:
+        status = AvailabilityStatus.FULLY_AVAILABLE
+    elif slots:
+        status = AvailabilityStatus.PARTLY_AVAILABLE
+    else:
+        status = AvailabilityStatus.BUSY
+    return DaySchedule(
+        date=target_date,
+        all_day_events=all_day_events,
+        timed_events=timed_events,
+        free_slots=slots,
+        status=status,
+    )
