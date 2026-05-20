@@ -93,6 +93,9 @@ class OpenClawClient:
             raise OpenClawCommandError("gog calendar create returned a malformed event")
         return self._map_calendar_event(event)
 
+    def delete_calendar_event(self, *, event_id: str) -> None:
+        self._run(self._delete_calendar_event_args(event_id))
+
     def with_access_token(self, access_token: str | None) -> "OpenClawClient":
         return OpenClawClient(
             command_runner=self._command_runner,
@@ -204,6 +207,17 @@ class OpenClawClient:
             timezone,
             "--json",
             "--no-input",
+        ]
+
+    def _delete_calendar_event_args(self, event_id: str) -> list[str]:
+        return self._base_args() + [
+            "calendar",
+            "delete",
+            "primary",
+            event_id,
+            "--json",
+            "--no-input",
+            "-y",
         ]
 
     def _base_args(self) -> list[str]:
