@@ -203,6 +203,39 @@ def format_availability_answer(
     )
 
 
+def format_schedule(schedules, *, timezone) -> str:
+    if not schedules:
+        return "No schedule to show."
+    single = len(schedules) == 1
+    lines: list[str] = []
+    for day in schedules:
+        lines.append(day.date.strftime("%a, %b %d") + f" — {_status_label(day.status)}")
+        if single:
+            for event in day.timed_events:
+                start = event.start_at.astimezone(timezone).strftime("%H:%M")
+                end = event.end_at.astimezone(timezone).strftime("%H:%M")
+                lines.append(f"  {start}–{end}  {event.title}")
+            for event in day.all_day_events:
+                lines.append(f"  (all day)   {event.title}")
+            if not day.timed_events and not day.all_day_events:
+                lines.append("  No events")
+            if day.free_slots:
+                windows = ", ".join(
+                    f"{s.astimezone(timezone).strftime('%H:%M')}–{e.astimezone(timezone).strftime('%H:%M')}"
+                    for s, e in day.free_slots
+                )
+                lines.append(f"  Free: {windows}")
+        else:
+            count = len(day.timed_events)
+            free = ", ".join(
+                f"{s.astimezone(timezone).strftime('%H:%M')}–{e.astimezone(timezone).strftime('%H:%M')}"
+                for s, e in day.free_slots
+            ) or "none"
+            lines.append(f"  {count} event(s); free: {free}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def _format_event_time_range(event: CalendarEvent) -> str:
     if event.all_day:
         return "All day"
@@ -213,3 +246,11 @@ def _format_list(values: Sequence[str]) -> str:
     if not values:
         return "None"
     return ", ".join(values)
+
+
+def _status_label(status) -> str:
+    return {
+        "fully_available": "free",
+        "partly_available": "partly free",
+        "busy": "busy",
+    }.get(getattr(status, "value", status), str(status))
