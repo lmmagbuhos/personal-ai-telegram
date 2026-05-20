@@ -52,6 +52,12 @@ def _resolve_date(lowered: str, *, now: datetime):
     return today  # default / explicit "today"
 
 
+def _flip(meridiem):
+    if meridiem is None:
+        return None
+    return "am" if meridiem.lower() == "pm" else "pm"
+
+
 def _to_dt(hour, minute, meridiem, date, tz) -> datetime:
     hour = int(hour)
     minute = int(minute) if minute else 0
@@ -68,11 +74,20 @@ def _extract_times(text, date, tz):
     match = _RANGE_RE.search(text)
     if match:
         h1, m1, ap1, h2, m2, ap2 = match.groups()
-        ap1 = ap1 or ap2  # "9-9:30am" -> apply pm/am to both if one is missing
-        ap2 = ap2 or ap1
-        start = _to_dt(h1, m1, ap1, date, tz)
-        end = _to_dt(h2, m2, ap2, date, tz)
+        start = _to_dt(h1, m1, ap1 or ap2, date, tz)
+        end = _to_dt(h2, m2, ap2 or ap1, date, tz)
+        if end <= start:
+            # Re-infer the side that lacked an explicit meridiem so the range
+            # is not backwards (e.g. "9-5pm" -> 09:00, not 21:00).
+            if ap1 is None and ap2 is not None:
+                start = _to_dt(h1, m1, _flip(ap2), date, tz)
+            elif ap2 is None and ap1 is not None:
+                end = _to_dt(h2, m2, _flip(ap1), date, tz)
         leftover = (text[: match.start()] + " " + text[match.end():])
+        if end <= start:
+            # Still impossible (e.g. both meridiems missing/ambiguous) -> not a
+            # usable range; let the caller fall through.
+            return None, text
         return (start, end), leftover
 
     match = _SINGLE_RE.search(text)

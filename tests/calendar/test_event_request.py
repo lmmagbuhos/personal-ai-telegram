@@ -32,3 +32,16 @@ def test_returns_none_for_non_event_text():
 
 def test_returns_none_when_intent_present_but_no_time():
     assert parse_event_request("schedule a dentist appointment", now=NOW, tz=TZ) is None
+
+
+def test_infers_am_start_when_only_end_has_meridiem():
+    draft = parse_event_request("schedule 9-5pm standup", now=NOW, tz=TZ)
+    assert draft is not None
+    assert draft.start_at == datetime(2026, 5, 20, 9, 0, tzinfo=TZ)
+    assert draft.end_at == datetime(2026, 5, 20, 17, 0, tzinfo=TZ)
+    assert draft.title == "standup"
+
+
+def test_returns_none_for_impossible_backwards_range():
+    # Both ends lack meridiem and resolve to end <= start; ambiguous -> None.
+    assert parse_event_request("schedule 9-5 review", now=NOW, tz=TZ) is None
