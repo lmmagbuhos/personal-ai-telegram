@@ -29,16 +29,16 @@ class FakeOpenClawClient:
 class FakeCalendarNotificationService:
     def __init__(self) -> None:
         self.agenda_calls: list[tuple[date, list[CalendarEvent], datetime]] = []
-        self.reminder_calls: list[tuple[list[CalendarEvent], datetime, int]] = []
+        self.reminder_calls: list[tuple[list[CalendarEvent], datetime, int, int | None]] = []
         self.agenda_result: list[CalendarEvent] = []
         self.reminder_result: list[CalendarEvent] = []
 
-    def events_for_daily_agenda(self, agenda_date, events, *, now):
+    def events_for_daily_agenda(self, agenda_date, events, *, now, user_id=None):
         self.agenda_calls.append((agenda_date, events, now))
         return self.agenda_result
 
-    def events_due_for_reminder(self, events, *, now, lead_minutes):
-        self.reminder_calls.append((events, now, lead_minutes))
+    def events_due_for_reminder(self, events, *, now, lead_minutes, user_id=None):
+        self.reminder_calls.append((events, now, lead_minutes, user_id))
         return self.reminder_result
 
 
@@ -142,7 +142,7 @@ def test_run_calendar_reminder_job_fetches_window_and_sends_reminders():
     scheduler.run_calendar_reminder_job()
 
     assert openclaw.calls == [(now, now + timedelta(minutes=30))]
-    assert calendar_notifications.reminder_calls == [([event], now, 30)]
+    assert calendar_notifications.reminder_calls == [([event], now, 30, None)]
     assert "Reminder" in telegram.sent[0]["text"]
     assert "Planning" in telegram.sent[0]["text"]
 
@@ -224,3 +224,99 @@ def test_run_gmail_poll_job_runs_each_active_user_when_multiuser_enabled():
         (None, now, 1, 1111),
         (None, now, 2, 2222),
     ]
+
+
+class _SharedOpenClawRaises:
+    """Fake OpenClaw that raises when list_calendar_events is called unconditionally."""
+    def __init__(self, per_user_factory):
+        self.per_user_factory = per_user_factory
+
+    def list_calendar_events(self, start_at, end_at):
+        raise AssertionError(
+            "BUG: shared client must not be used in multiuser reminder job. "
+            "This would fail in production with 'no TTY' when accessing shared keyring."
+        )
+
+    def with_access_token(self, access_token: str):
+        return self.per_user_factory(access_token)
+
+
+class _PerUserOpenClawFake:
+    """Per-user OpenClaw that returns a due event."""
+    def __init__(self, access_token: str, due_event: CalendarEvent):
+        self.access_token = access_token
+        self.due_event = due_event
+        self.calls: list[tuple[datetime, datetime]] = []
+
+    def list_calendar_events(self, start_at: datetime, end_at: datetime) -> list[CalendarEvent]:
+        self.calls.append((start_at, end_at))
+        return [self.due_event]
+
+
+def test_calendar_reminder_job_does_not_use_shared_client_in_multiuser():
+    """Verify that run_calendar_reminder_job uses only per-user clients in multiuser mode.
+
+    The bug: the old code called self.openclaw_client.list_calendar_events() unconditionally
+    at the top, which in multiuser mode would:
+    1. Hit the shared keyring (fails with "no TTY" in a daemon)
+    2. Get overwritten immediately in the per-user loop
+
+    This test proves the shared client is NOT called by making it raise an error.
+    """
+    now = datetime(2026, 5, 19, 8, 0, tzinfo=UTC)
+
+    # Create a due event that will be returned by per-user clients
+    due_event = make_event("Meeting", now + timedelta(minutes=25))
+
+    # Create users
+    users = [
+        User(
+            id=1,
+            telegram_user_id=111,
+            telegram_chat_id=1111,
+            display_name="A",
+            username="a",
+            status="active",
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    store = FakeMultiuserStore(users)
+
+    # Create the per-user factory
+    def per_user_factory(access_token: str):
+        return _PerUserOpenClawFake(access_token, due_event)
+
+    # Create a shared client that raises if called
+    shared_openclaw = _SharedOpenClawRaises(per_user_factory)
+
+    # Set up notification service to mark the event as due
+    calendar_notifications = FakeCalendarNotificationService()
+    calendar_notifications.reminder_result = [due_event]
+
+    telegram = FakeTelegram()
+    router = FakeRouter()
+    mail = FakeMailPollerForMultiuser()
+
+    scheduler = AssistantScheduler(
+        mail_polling_service=mail,
+        openclaw_client=shared_openclaw,
+        calendar_notifications=calendar_notifications,
+        telegram=telegram,
+        router=router,
+        authorized_chat_id=999,
+        reminder_lead_minutes=30,
+        telegram_poll_timeout_seconds=2,
+        resolve_access_token=lambda user_id, *, now: "user_token",
+        store=store,
+        multiuser_enabled=True,
+        now_provider=lambda: now,
+    )
+
+    # This should NOT raise, proving the shared client is not called
+    scheduler.run_calendar_reminder_job()
+
+    # Verify a reminder was sent to the user
+    assert len(telegram.sent) == 1
+    assert telegram.sent[0]["chat_id"] == 1111
+    assert "Meeting" in telegram.sent[0]["text"]

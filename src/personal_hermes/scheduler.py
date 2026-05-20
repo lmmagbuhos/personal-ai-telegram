@@ -120,7 +120,6 @@ class AssistantScheduler:
     def run_calendar_reminder_job(self) -> None:
         now = self.now_provider()
         window_end = now + timedelta(minutes=self.reminder_lead_minutes)
-        events = self.openclaw_client.list_calendar_events(now, window_end)
 
         if self.multiuser_enabled and self.store is not None:
             for user in self.store.list_active_google_users():
@@ -144,6 +143,7 @@ class AssistantScheduler:
                     )
             return
 
+        events = self.openclaw_client.list_calendar_events(now, window_end)
         due_events = self.calendar_notifications.events_due_for_reminder(
             events,
             now=now,
