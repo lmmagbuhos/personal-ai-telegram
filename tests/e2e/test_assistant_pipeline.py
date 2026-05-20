@@ -136,6 +136,7 @@ def make_settings(database_path) -> Settings:
         gog_account="lmmagbuhos@oakdriveventures.com",
         gog_client="default",
         timezone="UTC",
+        multiuser_enabled=False,
     )
 
 

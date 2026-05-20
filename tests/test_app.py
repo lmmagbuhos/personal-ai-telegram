@@ -26,6 +26,7 @@ def make_settings(database_path: Path) -> Settings:
         gog_executable="gog",
         gog_account="lmmagbuhos@oakdriveventures.com",
         gog_client="default",
+        multiuser_enabled=False,
     )
 
 
