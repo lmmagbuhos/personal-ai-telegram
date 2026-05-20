@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -165,6 +166,77 @@ class CalendarEditService:
             callback_query_id=callback.callback_query_id,
             text="That selection expired — start again.",
         )
+
+    def handle_value(self, message: TelegramMessage, *, user_id, now: datetime) -> bool:
+        if self.store is None:
+            return False
+        state = self.store.get_conversation_state(message.chat_id, user_id=user_id)
+        if state is None or state.state != "cal_edit_value":
+            return False
+        field = state.payload["field"]
+        event = state.payload["event"]
+        if field == "time":
+            parsed = self._parse_new_time(message.text, event=event)
+            if parsed is None:
+                self.telegram.send_message(
+                    chat_id=message.chat_id,
+                    text="I couldn't read that time — send e.g. `3pm` or `3-3:30pm`.",
+                )
+                return True
+            start_at, end_at = parsed
+            new_value = {"start": start_at.isoformat(), "end": end_at.isoformat()}
+            shown = f"{start_at.strftime('%H:%M')}–{end_at.strftime('%H:%M')}"
+        else:
+            new_value = {"text": message.text.strip()}
+            shown = message.text.strip()
+        self.store.set_conversation_state(
+            user_id=user_id, telegram_chat_id=message.chat_id, state="cal_confirm_edit",
+            payload={"op": "edit", "event": event, "field": field, "new_value": new_value},
+            updated_at=now,
+        )
+        self.telegram.send_message(
+            chat_id=message.chat_id,
+            text=f"Change {field} to {shown}?",
+            buttons=[[("Confirm", "cal_edit_ok"), ("Cancel", "cal_edit_no")]],
+        )
+        return True
+
+    def _parse_new_time(self, text, *, event):
+        start_dt = datetime.fromisoformat(event["start"]).astimezone(self.timezone)
+        end_dt = datetime.fromisoformat(event["end"]).astimezone(self.timezone)
+        duration = end_dt - start_dt
+        target_date = start_dt.date()
+        t = r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?"
+        rng = re.search(rf"{t}\s*(?:-|to|until)\s*{t}", text, re.IGNORECASE)
+
+        def to_dt(h, m, ap):
+            h = int(h); m = int(m) if m else 0
+            if ap:
+                ap = ap.lower()
+                if ap == "pm" and h != 12:
+                    h += 12
+                elif ap == "am" and h == 12:
+                    h = 0
+            return datetime(target_date.year, target_date.month, target_date.day, h, m, tzinfo=self.timezone)
+
+        if rng:
+            h1, m1, ap1, h2, m2, ap2 = rng.groups()
+            s = to_dt(h1, m1, ap1 or ap2)
+            e = to_dt(h2, m2, ap2 or ap1)
+            if e <= s:
+                if ap1 is None and ap2 is not None:
+                    s = to_dt(h1, m1, "am" if ap2.lower() == "pm" else "pm")
+                elif ap2 is None and ap1 is not None:
+                    e = to_dt(h2, m2, "am" if ap1.lower() == "pm" else "pm")
+            if e <= s:
+                return None
+            return s, e
+        single = re.search(rf"(?:at\s+)?{t}", text, re.IGNORECASE)
+        if single:
+            h, m, ap = single.groups()
+            s = to_dt(h, m, ap)
+            return s, s + duration
+        return None
 
     def _client_for_user(self, user_id, *, now):
         if self.resolve_access_token is None or user_id is None:

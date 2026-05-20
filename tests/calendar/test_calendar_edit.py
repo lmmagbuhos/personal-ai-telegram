@@ -147,3 +147,44 @@ def test_edit_choose_field_prompts_for_value(tmp_path):
     assert state.state == "cal_edit_value"
     assert state.payload["field"] == "title"
     assert any("new title" in m["text"].lower() for m in tg.messages)
+
+
+def _to_value_step(tmp_path, field):
+    store, uid, tg, client, svc = _start_edit(tmp_path)
+    now = datetime.now(tz=UTC)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data="cal_pick:1"), user_id=uid, now=now)  # picks "Review" (e2, 14:00-14:30 on 2026-05-20)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data=f"cal_field:{field}"), user_id=uid, now=now)
+    return store, uid, tg, client, svc
+
+
+def test_handle_value_title_sets_confirm(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "title")
+    now = datetime.now(tz=UTC)
+    handled = svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="Sprint review"), user_id=uid, now=now)
+    assert handled is True
+    state = store.get_conversation_state(2, user_id=uid)
+    assert state.state == "cal_confirm_edit"
+    assert state.payload["new_value"] == {"text": "Sprint review"}
+    assert any("Sprint review" in m["text"] for m in tg.messages)
+    flat = [cb for m in tg.messages for row in (m["buttons"] or []) for _l, cb in row]
+    assert "cal_edit_ok" in flat and "cal_edit_no" in flat
+
+
+def test_handle_value_time_parses_range(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "time")
+    now = datetime.now(tz=UTC)
+    svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="4-4:30pm"), user_id=uid, now=now)
+    state = store.get_conversation_state(2, user_id=uid)
+    assert state.state == "cal_confirm_edit"
+    nv = state.payload["new_value"]
+    assert nv["start"].startswith("2026-05-20T16:00:00")
+    assert nv["end"].startswith("2026-05-20T16:30:00")
+
+
+def test_handle_value_unparseable_time_stays(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "time")
+    now = datetime.now(tz=UTC)
+    svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="sometime later"), user_id=uid, now=now)
+    state = store.get_conversation_state(2, user_id=uid)
+    assert state.state == "cal_edit_value"
+    assert any("couldn't read" in m["text"].lower() for m in tg.messages)
