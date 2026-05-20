@@ -23,6 +23,20 @@ class PendingReply:
 
 
 @dataclass(frozen=True)
+class PendingCalendarEvent:
+    id: int
+    user_id: int
+    title: str
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    status: str
+    created_at: datetime
+    expires_at: datetime
+    telegram_message_id: int | None
+
+
+@dataclass(frozen=True)
 class ConversationState:
     user_id: int
     telegram_chat_id: int
@@ -478,6 +492,71 @@ class StateStore:
             )
             return cursor.rowcount
 
+    def create_pending_calendar_event(
+        self, *, user_id: int | None = None, title: str,
+        start_at: datetime, end_at: datetime, timezone: str,
+        created_at: datetime, expires_at: datetime, telegram_message_id: int | None,
+    ) -> int:
+        user_id = self._resolve_user_id(user_id)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO pending_calendar_events (
+                    user_id, title, start_at, end_at, timezone, status,
+                    created_at, expires_at, telegram_message_id
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (
+                    user_id, title,
+                    self._datetime_to_text(start_at), self._datetime_to_text(end_at),
+                    timezone, self._datetime_to_text(created_at),
+                    self._datetime_to_text(expires_at), telegram_message_id,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def get_pending_calendar_event(
+        self, pending_id: int, *, user_id: int | None = None, now: datetime | None = None,
+    ) -> "PendingCalendarEvent | None":
+        if now is not None:
+            self.expire_pending_calendar_events(now)
+        where = "id = ?"
+        params: list[Any] = [pending_id]
+        if user_id is not None:
+            where += " AND user_id = ?"
+            params.append(user_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM pending_calendar_events WHERE {where}", params
+            ).fetchone()
+        if row is None:
+            return None
+        pending = self._pending_calendar_event_from_row(row)
+        if now is not None and pending.status == "expired":
+            return None
+        return pending
+
+    def mark_pending_calendar_event_created(self, pending_id: int) -> bool:
+        return self._update_pending_calendar_event_status(pending_id, "created")
+
+    def mark_pending_calendar_event_failed(self, pending_id: int) -> bool:
+        return self._update_pending_calendar_event_status(pending_id, "failed")
+
+    def mark_pending_calendar_event_cancelled(self, pending_id: int) -> bool:
+        return self._update_pending_calendar_event_status(pending_id, "cancelled")
+
+    def expire_pending_calendar_events(self, now: datetime) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE pending_calendar_events
+                SET status = 'expired'
+                WHERE status = 'pending' AND expires_at <= ?
+                """,
+                (self._datetime_to_text(now),),
+            )
+            return cursor.rowcount
+
     def record_reply_audit(
         self,
         *,
@@ -671,6 +750,14 @@ class StateStore:
             )
             return cursor.rowcount == 1
 
+    def _update_pending_calendar_event_status(self, pending_id: int, status: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE pending_calendar_events SET status = ? WHERE id = ?",
+                (status, pending_id),
+            )
+            return cursor.rowcount == 1
+
     def _migrate_schema(self, connection: sqlite3.Connection, current_version: int) -> None:
         if current_version == 0:
             connection.execute(
@@ -851,6 +938,21 @@ class StateStore:
             status=str(row["status"]),
             created_at=StateStore._text_to_datetime(str(row["created_at"])),
             expires_at=StateStore._text_to_datetime(str(row["expires_at"])),
+            telegram_message_id=row["telegram_message_id"],
+        )
+
+    @staticmethod
+    def _pending_calendar_event_from_row(row: "sqlite3.Row") -> "PendingCalendarEvent":
+        return PendingCalendarEvent(
+            id=int(row["id"]),
+            user_id=int(row["user_id"]),
+            title=row["title"],
+            start_at=StateStore._text_to_datetime(row["start_at"]),
+            end_at=StateStore._text_to_datetime(row["end_at"]),
+            timezone=row["timezone"],
+            status=row["status"],
+            created_at=StateStore._text_to_datetime(row["created_at"]),
+            expires_at=StateStore._text_to_datetime(row["expires_at"]),
             telegram_message_id=row["telegram_message_id"],
         )
 

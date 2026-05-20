@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS reply_audit_log (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS pending_calendar_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('pending', 'created', 'failed', 'cancelled', 'expired')
+    ),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    telegram_message_id INTEGER,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS calendar_agenda_notifications (
     user_id INTEGER NOT NULL,
     agenda_date TEXT NOT NULL,
