@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from personal_hermes.calendar.service import CalendarService
+from personal_hermes.calendar.availability import AvailabilityStatus
 from personal_hermes.openclaw.types import CalendarEvent
 
 
@@ -83,3 +84,32 @@ def test_calendar_service_uses_access_token_for_user_context():
     assert result is not None
     assert client.access_tokens == ["token-1"]
     assert client.calls
+
+
+_SF_TZ = ZoneInfo("Asia/Manila")
+
+
+class _SFFakeClient:
+    def __init__(self, events):
+        self._events = events
+    def list_calendar_events(self, start_at, end_at):
+        return self._events
+
+
+def test_schedule_for_returns_day_schedules_with_events_and_free_slots():
+    event = CalendarEvent(
+        id="e", title="Standup", all_day=False,
+        start_at=datetime(2026, 5, 21, 9, 0, tzinfo=_SF_TZ),
+        end_at=datetime(2026, 5, 21, 9, 30, tzinfo=_SF_TZ),
+    )
+    service = CalendarService(
+        openclaw_client=_SFFakeClient([event]),
+        timezone=_SF_TZ, workday_start="09:00", workday_end="17:00",
+        min_free_block_minutes=60,
+    )
+    schedules = service.schedule_for("today", today=date(2026, 5, 21))
+    assert len(schedules) == 1
+    day = schedules[0]
+    assert [e.title for e in day.timed_events] == ["Standup"]
+    assert day.free_slots
+    assert day.status == AvailabilityStatus.PARTLY_AVAILABLE

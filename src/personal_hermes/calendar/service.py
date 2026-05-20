@@ -7,6 +7,8 @@ from personal_hermes.calendar.availability import (
     AvailabilityStatus,
     classify_day,
     parse_date_range,
+    DaySchedule,
+    day_schedule,
 )
 from personal_hermes.openclaw.types import CalendarEvent
 
@@ -104,3 +106,39 @@ class CalendarService:
             partly_available=partly_available,
             busy=busy,
         )
+
+    def schedule_for(
+        self, text: str, *, today: date, user_id: int | None = None
+    ) -> list[DaySchedule]:
+        start_date, end_date = parse_date_range(text, today=today)
+        start_at = datetime.combine(start_date, time.min, tzinfo=self.timezone)
+        end_at = datetime.combine(
+            end_date + timedelta(days=1), time.min, tzinfo=self.timezone
+        )
+        openclaw_client = self.openclaw_client
+        if self.resolve_access_token is not None and user_id is not None:
+            access_token = self.resolve_access_token(user_id, now=datetime.now(tz=UTC))
+            if access_token is None:
+                return []
+            if hasattr(openclaw_client, "with_access_token"):
+                openclaw_client = openclaw_client.with_access_token(access_token)
+
+        events = openclaw_client.list_calendar_events(
+            start_at.astimezone(UTC), end_at.astimezone(UTC)
+        )
+
+        schedules: list[DaySchedule] = []
+        current = start_date
+        while current <= end_date:
+            schedules.append(
+                day_schedule(
+                    target_date=current,
+                    events=events,
+                    timezone=self.timezone,
+                    workday_start=self.workday_start,
+                    workday_end=self.workday_end,
+                    min_free_block_minutes=self.min_free_block_minutes,
+                )
+            )
+            current += timedelta(days=1)
+        return schedules
