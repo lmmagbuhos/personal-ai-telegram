@@ -23,3 +23,6 @@ ENV/
 build/
 dist/
 *.egg-info/
+
+# Local tooling (e.g. standalone ngrok binary for OAuth tunneling)
+.tools/
