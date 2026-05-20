@@ -96,6 +96,21 @@ class OpenClawClient:
     def delete_calendar_event(self, *, event_id: str) -> None:
         self._run(self._delete_calendar_event_args(event_id))
 
+    def update_calendar_event(
+        self, *, event_id: str, summary: str | None = None,
+        start_at: datetime | None = None, end_at: datetime | None = None,
+        location: str | None = None, description: str | None = None,
+        timezone: str | None = None,
+    ) -> CalendarEvent:
+        payload = self._run(self._update_calendar_event_args(
+            event_id, summary, start_at, end_at, location, description, timezone))
+        if not isinstance(payload, dict):
+            raise OpenClawCommandError("gog calendar update returned a non-object value")
+        event = payload.get("event", payload)
+        if not isinstance(event, dict):
+            raise OpenClawCommandError("gog calendar update returned a malformed event")
+        return self._map_calendar_event(event)
+
     def with_access_token(self, access_token: str | None) -> "OpenClawClient":
         return OpenClawClient(
             command_runner=self._command_runner,
@@ -219,6 +234,25 @@ class OpenClawClient:
             "--no-input",
             "-y",
         ]
+
+    def _update_calendar_event_args(
+        self, event_id, summary, start_at, end_at, location, description, timezone
+    ) -> list[str]:
+        args = self._base_args() + ["calendar", "update", "primary", event_id]
+        if summary is not None:
+            args += ["--summary", summary]
+        if start_at is not None:
+            args += ["--from", start_at.isoformat()]
+        if end_at is not None:
+            args += ["--to", end_at.isoformat()]
+        if location is not None:
+            args += ["--location", location]
+        if description is not None:
+            args += ["--description", description]
+        if timezone is not None:
+            args += ["--start-timezone", timezone, "--end-timezone", timezone]
+        args += ["--json", "--no-input"]
+        return args
 
     def _base_args(self) -> list[str]:
         args = [self._executable]
