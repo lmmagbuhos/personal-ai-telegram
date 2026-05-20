@@ -60,10 +60,7 @@ class CalendarService:
         )
         openclaw_client = self.openclaw_client
         if self.resolve_access_token is not None and user_id is not None:
-            try:
-                access_token = self.resolve_access_token(user_id, now=datetime.now(tz=UTC))
-            except TypeError:
-                access_token = self.resolve_access_token(user_id)
+            access_token = self.resolve_access_token(user_id, now=datetime.now(tz=UTC))
 
             if access_token is None:
                 return AvailabilityResult(

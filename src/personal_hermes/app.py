@@ -3,7 +3,7 @@ import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -85,10 +85,12 @@ class GoogleAccessTokenResolver:
             )
             return None
 
-        if (
-            account.token_expires_at is not None
-            and account.token_expires_at <= now + self.refresh_margin
-        ):
+        expires_at = account.token_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            # Stored expiry is naive; treat it as UTC so it compares with the aware `now`.
+            expires_at = expires_at.replace(tzinfo=UTC)
+
+        if expires_at is not None and expires_at <= now + self.refresh_margin:
             try:
                 access_token, token_expires_at = self.oauth_service.refresh_access_token(
                     refresh_token=refresh_token,
