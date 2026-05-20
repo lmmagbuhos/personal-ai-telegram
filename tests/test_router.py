@@ -1,5 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from personal_hermes.calendar.availability import DaySchedule, AvailabilityStatus
 from personal_hermes.calendar.service import AvailabilityResult
 from personal_hermes.router import AssistantRouter
 from personal_hermes.storage.store import StateStore
@@ -26,14 +28,28 @@ class FakeTelegram:
 class FakeCalendarService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, date]] = []
+        self.timezone = ZoneInfo("UTC")
 
-    def availability_for(self, text: str, *, today: date) -> AvailabilityResult:
+    def availability_for(self, text: str, *, today: date, user_id: int | None = None) -> AvailabilityResult:
         self.calls.append((text, today))
         return AvailabilityResult(
             fully_available=["Monday"],
             partly_available=["Tuesday"],
             busy=["Wednesday"],
         )
+
+    def schedule_for(self, text: str, *, today: date, user_id: int | None = None) -> list[DaySchedule]:
+        self.calls.append((text, today))
+        # Return a simple schedule for testing
+        return [
+            DaySchedule(
+                date=today,
+                status=AvailabilityStatus.FULLY_AVAILABLE,
+                timed_events=[],
+                all_day_events=[],
+                free_slots=[(datetime(2026, 5, 19, 9, 0, tzinfo=ZoneInfo("UTC")), datetime(2026, 5, 19, 17, 0, tzinfo=ZoneInfo("UTC")))],
+            )
+        ]
 
 
 class FakeMailActionService:
@@ -91,8 +107,7 @@ def test_calendar_question_routes_to_calendar_service_and_sends_answer():
     assert calendar_service.calls == [
         ("What dates am I available this week?", date(2026, 5, 19))
     ]
-    assert "Fully available" in telegram.sent[0]["text"]
-    assert "Monday" in telegram.sent[0]["text"]
+    assert "free" in telegram.sent[0]["text"]
 
 
 def test_callback_routes_to_mail_action_service():

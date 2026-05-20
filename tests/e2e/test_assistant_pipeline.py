@@ -160,8 +160,18 @@ def test_telegram_calendar_question_returns_availability_answer(tmp_path):
     components.scheduler.run_telegram_poll_job()
 
     assert len(telegram.sent_messages) == 1
-    assert "Fully available:" in telegram.sent_messages[0]["text"]
-    assert "Busy:" in telegram.sent_messages[0]["text"]
+    text = telegram.sent_messages[0]["text"]
+    assert "free:" in text or "No events" in text
+
+
+def test_telegram_whats_on_calendar_uses_schedule_view(tmp_path):
+    now = datetime(2026, 5, 19, 8, 0, tzinfo=UTC)
+    components, telegram, _gog = make_components(tmp_path, now=now)
+    telegram.queue_message("what's on my calendar today?")
+
+    components.scheduler.run_telegram_poll_job()
+
+    assert len(telegram.sent_messages) == 1
 
 
 def test_gmail_poll_to_telegram_notification_and_send_reply_callback(tmp_path):

@@ -4,7 +4,7 @@ from typing import Protocol
 
 from personal_hermes.calendar.service import AvailabilityResult
 from personal_hermes.storage.store import StateStore
-from personal_hermes.telegram.adapter import format_availability_answer
+from personal_hermes.telegram.adapter import format_availability_answer, format_schedule
 from personal_hermes.telegram.types import TelegramCallback, TelegramMessage
 
 
@@ -24,6 +24,15 @@ class RouterCalendarService(Protocol):
         today,
         user_id: int | None = None,
     ) -> AvailabilityResult:
+        ...
+
+    def schedule_for(
+        self,
+        text: str,
+        *,
+        today,
+        user_id: int | None = None,
+    ):
         ...
 
 
@@ -90,17 +99,12 @@ class AssistantRouter:
                 return
 
             if _looks_like_availability_question(event.text):
-                result = self.calendar_service.availability_for(
-                    event.text,
-                    today=now.date(),
+                schedules = self.calendar_service.schedule_for(
+                    event.text, today=now.date(), user_id=None
                 )
                 self.telegram.send_message(
                     chat_id=event.chat_id,
-                    text=format_availability_answer(
-                        fully_available=result.fully_available,
-                        partly_available=result.partly_available,
-                        busy=result.busy,
-                    ),
+                    text=format_schedule(schedules, timezone=self.calendar_service.timezone),
                 )
                 return
 
@@ -137,18 +141,12 @@ class AssistantRouter:
             return
 
         if _looks_like_availability_question(event.text):
-            result = self.calendar_service.availability_for(
-                event.text,
-                today=now.date(),
-                user_id=user.id,
+            schedules = self.calendar_service.schedule_for(
+                event.text, today=now.date(), user_id=user.id
             )
             self.telegram.send_message(
                 chat_id=event.chat_id,
-                text=format_availability_answer(
-                    fully_available=result.fully_available,
-                    partly_available=result.partly_available,
-                    busy=result.busy,
-                ),
+                text=format_schedule(schedules, timezone=self.calendar_service.timezone),
             )
             return
 
@@ -435,11 +433,8 @@ def _looks_like_availability_question(text: str) -> bool:
     return any(
         marker in lowered
         for marker in (
-            "available",
-            "availability",
-            "free",
-            "this week",
-            "tomorrow",
-            "today",
+            "available", "availability", "free", "this week",
+            "tomorrow", "today", "schedule", "agenda",
+            "what's on", "whats on", "what do i have",
         )
     )
