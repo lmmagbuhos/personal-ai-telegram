@@ -114,3 +114,38 @@ def _busy_ranges(
         previous_start, previous_end = merged[-1]
         merged[-1] = (previous_start, max(previous_end, end_at))
     return merged
+
+
+def free_slots(
+    *,
+    target_date: date,
+    events: list[CalendarEvent],
+    timezone: ZoneInfo,
+    workday_start: str,
+    workday_end: str,
+    min_free_block_minutes: int,
+) -> list[tuple[datetime, datetime]]:
+    timed = [
+        event
+        for event in events
+        if not event.all_day and _event_intersects_date(event, target_date, timezone)
+    ]
+    work_start = datetime.combine(
+        target_date, time.fromisoformat(workday_start), tzinfo=timezone
+    )
+    work_end = datetime.combine(
+        target_date, time.fromisoformat(workday_end), tzinfo=timezone
+    )
+    busy = _busy_ranges(timed, work_start, work_end, timezone)
+    threshold = timedelta(minutes=min_free_block_minutes)
+
+    slots: list[tuple[datetime, datetime]] = []
+    cursor = work_start
+    for start_at, end_at in busy:
+        if start_at - cursor >= threshold:
+            slots.append((cursor, start_at))
+        if end_at > cursor:
+            cursor = end_at
+    if work_end - cursor >= threshold:
+        slots.append((cursor, work_end))
+    return slots

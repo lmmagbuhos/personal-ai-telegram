@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 from personal_hermes.calendar.availability import (
     AvailabilityStatus,
     classify_day,
+    free_slots,
     parse_date_range,
 )
 from personal_hermes.openclaw.types import CalendarEvent
@@ -120,4 +121,47 @@ def test_parse_date_range_supports_today_tomorrow_weekday_and_this_week():
         date(2026, 5, 18),
         date(2026, 5, 24),
     )
+
+
+# free_slots tests
+FS_TZ = ZoneInfo("Asia/Manila")
+
+
+def fs_ev(h1, m1, h2, m2, *, all_day=False, title="x"):
+    return CalendarEvent(
+        id="e", title=title,
+        start_at=datetime(2026, 5, 21, h1, m1, tzinfo=FS_TZ),
+        end_at=datetime(2026, 5, 21, h2, m2, tzinfo=FS_TZ),
+        all_day=all_day,
+    )
+
+
+def fs_slots(events):
+    return free_slots(
+        target_date=datetime(2026, 5, 21, tzinfo=FS_TZ).date(),
+        events=events, timezone=FS_TZ,
+        workday_start="09:00", workday_end="17:00", min_free_block_minutes=60,
+    )
+
+
+def test_free_slots_empty_day_is_whole_workday():
+    assert fs_slots([]) == [(datetime(2026, 5, 21, 9, 0, tzinfo=FS_TZ), datetime(2026, 5, 21, 17, 0, tzinfo=FS_TZ))]
+
+
+def test_free_slots_gaps_around_events():
+    slots = fs_slots([fs_ev(9, 0, 9, 30), fs_ev(14, 0, 15, 0)])
+    assert slots == [
+        (datetime(2026, 5, 21, 9, 30, tzinfo=FS_TZ), datetime(2026, 5, 21, 14, 0, tzinfo=FS_TZ)),
+        (datetime(2026, 5, 21, 15, 0, tzinfo=FS_TZ), datetime(2026, 5, 21, 17, 0, tzinfo=FS_TZ)),
+    ]
+
+
+def test_free_slots_ignores_all_day_events():
+    assert fs_slots([fs_ev(0, 0, 23, 59, all_day=True), fs_ev(9, 0, 10, 0)]) == [
+        (datetime(2026, 5, 21, 10, 0, tzinfo=FS_TZ), datetime(2026, 5, 21, 17, 0, tzinfo=FS_TZ)),
+    ]
+
+
+def test_free_slots_drops_gaps_below_min_block():
+    assert fs_slots([fs_ev(9, 30, 10, 0), fs_ev(10, 0, 17, 0)]) == []
 
