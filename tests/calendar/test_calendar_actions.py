@@ -21,6 +21,11 @@ class FakeTelegram:
         self.answers.append(text)
 
 
+class FakeTelegramUnauthorized(FakeTelegram):
+    def is_authorized(self, event):
+        return False
+
+
 class FakeClient:
     def __init__(self):
         self.created = []
@@ -83,3 +88,21 @@ def test_cancel_marks_cancelled_and_does_not_create(tmp_path):
 
     assert client.created == []
     assert store.get_pending_calendar_event(pid, user_id=uid).status == "cancelled"
+
+
+def test_confirm_works_in_multiuser_when_single_user_auth_is_unset(tmp_path):
+    store = _store(tmp_path); uid = _uid(store)
+    tg = FakeTelegramUnauthorized(); client = FakeClient()
+    svc = CalendarActionService(
+        openclaw_client=client, telegram=tg, store=store,
+        resolve_access_token=lambda user_id, *, now: "tok",
+    )
+    now = datetime.now(tz=UTC)
+    draft = EventDraft(title="dentist",
+                       start_at=datetime(2026, 5, 20, 9, 0, tzinfo=TZ),
+                       end_at=datetime(2026, 5, 20, 9, 30, tzinfo=TZ))
+    pid = svc.prepare_event(user_id=uid, draft=draft, telegram_message_id=5, now=now)
+    cb = TelegramCallback(chat_id=2, user_id=1, message_id=5,
+                          callback_query_id="q", data=f"cal_confirm:{pid}")
+    svc.handle_callback(cb, user_id=uid, now=now)
+    assert client.created and client.created[0][0] == "dentist"

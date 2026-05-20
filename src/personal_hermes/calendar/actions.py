@@ -11,7 +11,6 @@ class CalendarWriteClient(Protocol):
 
 
 class CalendarActionTelegram(Protocol):
-    def is_authorized(self, event: TelegramCallback) -> bool: ...
     def edit_message(self, *, chat_id: int, message_id: int, text: str) -> None: ...
     def answer_callback(self, *, callback_query_id: str, text: str | None = None) -> None: ...
 
@@ -35,9 +34,6 @@ class CalendarActionService:
         )
 
     def handle_callback(self, callback: TelegramCallback, *, user_id=None, now: datetime) -> None:
-        if not self.telegram.is_authorized(callback):
-            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Unauthorized")
-            return
         action, _, value = callback.data.partition(":")
         if action == "cal_confirm":
             self._confirm(callback, pending_id=int(value), user_id=user_id, now=now)
