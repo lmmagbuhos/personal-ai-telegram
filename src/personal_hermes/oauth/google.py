@@ -23,6 +23,7 @@ GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
 )
 
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"

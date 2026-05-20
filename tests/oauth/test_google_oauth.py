@@ -93,6 +93,10 @@ def test_authorization_url_uses_offline_access_and_expected_scopes():
         "https://www.googleapis.com/auth/calendar.readonly"
         in captured["scopes"]
     )
+    assert (
+        "https://www.googleapis.com/auth/calendar.events"
+        in captured["scopes"]
+    )
     assert fake_flow.redirect_uri == "https://example.test/oauth/google/callback"
     assert query["access_type"] == ["offline"]
     assert query["include_granted_scopes"] == ["true"]
@@ -167,6 +171,7 @@ def test_exchange_code_uses_normalized_actual_granted_scopes():
                     "https://www.googleapis.com/auth/gmail.modify",
                     "https://www.googleapis.com/auth/gmail.send",
                     "https://www.googleapis.com/auth/calendar.readonly",
+                    "https://www.googleapis.com/auth/calendar.events",
                 ],
             ),
         ),
