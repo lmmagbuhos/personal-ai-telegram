@@ -97,7 +97,13 @@ class AssistantRouter:
             if self._handle_edit_flow_message(event, now=now):
                 return
 
+            if self._handle_calendar_edit_value(event, user_id=None, now=now):
+                return
+
             if self._handle_cancel_event(event, user_id=None, now=now):
+                return
+
+            if self._handle_edit_intent(event, user_id=None, now=now):
                 return
 
             if self._handle_create_event(event, user_id=None, now=now):
@@ -142,7 +148,13 @@ class AssistantRouter:
         if self._handle_edit_flow_message(event, user_id=user.id, now=now):
             return
 
+        if self._handle_calendar_edit_value(event, user_id=user.id, now=now):
+            return
+
         if self._handle_cancel_event(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_edit_intent(event, user_id=user.id, now=now):
             return
 
         if self._handle_create_event(event, user_id=user.id, now=now):
@@ -339,7 +351,7 @@ class AssistantRouter:
             )
             return
 
-        if action in ("cal_pick", "cal_del_ok", "cal_del_no") and self.calendar_edit_service is not None:
+        if action in ("cal_pick", "cal_del_ok", "cal_del_no", "cal_field", "cal_edit_ok", "cal_edit_no") and self.calendar_edit_service is not None:
             self.calendar_edit_service.handle_callback(callback, user_id=user_id, now=now)
             return
 
@@ -371,6 +383,25 @@ class AssistantRouter:
                 and ("event" in lowered or "meeting" in lowered or "appointment" in lowered)):
             return False
         return self.calendar_edit_service.start(event, operation="cancel", user_id=user_id, now=now)
+
+    def _handle_edit_intent(self, event, *, user_id=None, now) -> bool:
+        if (self.calendar_edit_service is None or self.store is None
+                or not isinstance(event, TelegramMessage)):
+            return False
+        lowered = event.text.lower()
+        if not (("edit" in lowered or "change" in lowered or "reschedule" in lowered or "move" in lowered)
+                and ("event" in lowered or "meeting" in lowered or "appointment" in lowered)):
+            return False
+        return self.calendar_edit_service.start(event, operation="edit", user_id=user_id, now=now)
+
+    def _handle_calendar_edit_value(self, event, *, user_id=None, now) -> bool:
+        if (self.calendar_edit_service is None or self.store is None
+                or not isinstance(event, TelegramMessage)):
+            return False
+        state = self.store.get_conversation_state(event.chat_id, user_id=user_id)
+        if state is None or state.state != "cal_edit_value":
+            return False
+        return self.calendar_edit_service.handle_value(event, user_id=user_id, now=now)
 
     def _handle_create_event(self, event, *, user_id=None, now) -> bool:
         if (
