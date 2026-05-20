@@ -6,9 +6,11 @@ from personal_hermes.config import Settings
 
 REQUIRED_ENV = {
     "TELEGRAM_BOT_TOKEN": "test-telegram-token",
-    "TELEGRAM_AUTHORIZED_CHAT_ID": "123456",
-    "TELEGRAM_AUTHORIZED_USER_ID": "789012",
     "SQLITE_DATABASE_PATH": "var/test.sqlite3",
+    "PUBLIC_BASE_URL": "https://hermes.example.com",
+    "GOOGLE_OAUTH_CLIENT_ID": "client-id",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret",
+    "TOKEN_ENCRYPTION_KEY": "a" * 44,
 }
 
 
@@ -38,6 +40,10 @@ OPTIONAL_ENV_KEYS = [
     "OAUTH_SESSION_TTL_MINUTES",
     "OAUTH_HOST",
     "OAUTH_PORT",
+    "MINIMAX_API_KEY",
+    "MINIMAX_MODEL",
+    "MINIMAX_BASE_URL",
+    "LLM_TIMEOUT_SECONDS",
 ]
 
 
@@ -71,13 +77,16 @@ def test_settings_defaults(monkeypatch):
     assert settings.gog_executable == "gog"
     assert settings.gog_account is None
     assert settings.gog_client is None
-    assert settings.multiuser_enabled is False
-    assert settings.public_base_url is None
-    assert settings.google_oauth_client_id is None
-    assert settings.google_oauth_client_secret is None
+    assert settings.multiuser_enabled is True
+    assert settings.public_base_url == "https://hermes.example.com"
+    assert settings.google_oauth_client_id == "client-id"
+    assert settings.google_oauth_client_secret == "client-secret"
     assert settings.google_oauth_redirect_path == "/oauth/google/callback"
-    assert settings.google_oauth_redirect_url is None
-    assert settings.token_encryption_key is None
+    assert (
+        settings.google_oauth_redirect_url
+        == "https://hermes.example.com/oauth/google/callback"
+    )
+    assert settings.token_encryption_key == "a" * 44
     assert settings.invite_only is True
     assert settings.invited_telegram_user_ids == ""
     assert settings.invited_telegram_user_ids_tuple == ()
@@ -89,10 +98,7 @@ def test_settings_defaults(monkeypatch):
 def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
     clear_optional_env(monkeypatch)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
-    monkeypatch.setenv("TELEGRAM_AUTHORIZED_CHAT_ID", "123")
-    monkeypatch.setenv("TELEGRAM_AUTHORIZED_USER_ID", "456")
     monkeypatch.setenv("SQLITE_DATABASE_PATH", "/tmp/hermes.sqlite3")
-    monkeypatch.setenv("MULTIUSER_ENABLED", "true")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://hermes.example.com")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
@@ -123,7 +129,6 @@ def test_multiuser_oauth_settings_parse_allowlist(monkeypatch):
 def test_multiuser_enabled_requires_oauth_settings(monkeypatch, missing_key):
     clear_optional_env(monkeypatch)
     set_required_env(monkeypatch)
-    monkeypatch.setenv("MULTIUSER_ENABLED", "true")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://hermes.example.com")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
@@ -131,6 +136,15 @@ def test_multiuser_enabled_requires_oauth_settings(monkeypatch, missing_key):
     monkeypatch.delenv(missing_key)
 
     with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_runtime_rejects_disabling_multiuser(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("MULTIUSER_ENABLED", "false")
+
+    with pytest.raises(ValidationError, match="multiuser runtime"):
         Settings(_env_file=None)
 
 
@@ -153,8 +167,6 @@ def test_blank_optional_env_file_values_use_defaults(monkeypatch, tmp_path):
         "\n".join(
             [
                 "TELEGRAM_BOT_TOKEN=token",
-                "TELEGRAM_AUTHORIZED_CHAT_ID=123",
-                "TELEGRAM_AUTHORIZED_USER_ID=456",
                 "SQLITE_DATABASE_PATH=/tmp/hermes.sqlite3",
                 "PUBLIC_BASE_URL=",
                 "GOOGLE_OAUTH_CLIENT_ID=",
@@ -165,12 +177,8 @@ def test_blank_optional_env_file_values_use_defaults(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    settings = Settings(_env_file=env_file)
-
-    assert settings.public_base_url is None
-    assert settings.google_oauth_client_id is None
-    assert settings.google_oauth_client_secret is None
-    assert settings.token_encryption_key is None
+    with pytest.raises(ValidationError):
+        Settings(_env_file=env_file)
 
 
 def test_invited_telegram_user_ids_must_be_comma_separated_integers(monkeypatch):
@@ -209,6 +217,38 @@ def test_settings_do_not_require_openclaw_rest_credentials(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert settings.gog_executable == "gog"
+
+
+def test_minimax_settings_are_optional_and_default_to_disabled(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.minimax_api_key is None
+    assert settings.minimax_model == "MiniMax-M2.7"
+    assert settings.minimax_base_url == "https://api.minimax.io/v1"
+    assert settings.llm_timeout_seconds == 10
+    assert settings.llm_configured is False
+
+
+def test_minimax_api_key_enables_llm(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_API_KEY", "secret")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.llm_configured is True
+
+
+def test_minimax_base_url_must_be_absolute_http_url(monkeypatch):
+    clear_optional_env(monkeypatch)
+    set_required_env(monkeypatch)
+    monkeypatch.setenv("MINIMAX_BASE_URL", "not-a-url")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(

@@ -4,45 +4,28 @@ Use this procedure to prove the assistant works with real Telegram, Gmail, and G
 
 No GitHub push is required for this procedure.
 
-## 1. Confirm Google Workspace Access
+## 1. Confirm Multi-User OAuth Configuration
 
-The OpenClaw `gog` CLI uses a file keyring on this server, so load the keyring password before running live `gog` commands:
+Personal Hermes uses per-user Google OAuth tokens. The legacy process-level
+`gog --account ... --client ...` token is not part of the supported runtime.
 
-```bash
-set -a
-. /home/claude-team/.config/gogcli/keyring.env
-set +a
-```
-
-Verify OAuth:
+The `.env` file must include:
 
 ```bash
-/home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default auth doctor --check
+TELEGRAM_BOT_TOKEN=replace-with-real-token
+SQLITE_DATABASE_PATH=var/personal-hermes.sqlite3
+GOG_EXECUTABLE=/home/claude-team/.local/bin/gog
+TIMEZONE=Asia/Manila
+MULTIUSER_ENABLED=true
+PUBLIC_BASE_URL=https://your-public-domain.example.com
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+TOKEN_ENCRYPTION_KEY=...
+INVITE_ONLY=true
+INVITED_TELEGRAM_USER_IDS=replace-with-telegram-user-id
+MINIMAX_API_KEY=replace-with-minimax-api-key
+MINIMAX_MODEL=MiniMax-M2.7
 ```
-
-Expected result:
-
-- `status ok`
-
-Verify Google Calendar read access:
-
-```bash
-/home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default calendar events primary --from 2026-05-19T00:00:00+08:00 --to 2026-05-20T00:00:00+08:00 --json --all-pages --no-input
-```
-
-Expected result:
-
-- JSON output with an `events` list.
-
-Verify Gmail read access:
-
-```bash
-/home/claude-team/.local/bin/gog --account lmmagbuhos@oakdriveventures.com --client default gmail messages search in:inbox --json --max 1 --include-body --body-format text --no-input
-```
-
-Expected result:
-
-- JSON output with a `messages` list.
 
 ## 2. Configure Telegram
 
@@ -61,18 +44,7 @@ curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates"
    - `message.chat.id` to `TELEGRAM_AUTHORIZED_CHAT_ID`
    - `message.from.id` to `TELEGRAM_AUTHORIZED_USER_ID`
 
-The `.env` file should include:
-
-```bash
-TELEGRAM_BOT_TOKEN=replace-with-real-token
-TELEGRAM_AUTHORIZED_CHAT_ID=replace-with-chat-id
-TELEGRAM_AUTHORIZED_USER_ID=replace-with-user-id
-SQLITE_DATABASE_PATH=var/personal-hermes.sqlite3
-GOG_EXECUTABLE=/home/claude-team/.local/bin/gog
-GOG_ACCOUNT=lmmagbuhos@oakdriveventures.com
-GOG_CLIENT=default
-TIMEZONE=Asia/Manila
-```
+Place the Telegram user ID in `INVITED_TELEGRAM_USER_IDS` when `INVITE_ONLY=true`.
 
 Do not commit `.env`.
 
@@ -89,8 +61,6 @@ Expected result:
 
 ## 4. Start The Assistant
 
-In the same shell where `GOG_KEYRING_PASSWORD` is loaded:
-
 ```bash
 . .venv/bin/activate
 python -m personal_hermes --run
@@ -98,7 +68,42 @@ python -m personal_hermes --run
 
 Keep this process running during the smoke test.
 
-## 5. Test Google Calendar Through Telegram
+## 5. Connect Google In Telegram
+
+Send this Telegram message to the bot:
+
+```text
+/connect
+```
+
+Expected result:
+
+- The bot replies with a Google authorization URL.
+- Complete the OAuth flow in the browser.
+- Telegram confirms `Google connected.`
+
+Then send:
+
+```text
+/status
+```
+
+Expected result:
+
+- The bot replies with `Connected to Google as ...`.
+
+Send:
+
+```text
+Can you check whether I have anything later today?
+```
+
+Expected result:
+
+- The bot returns a calendar schedule or availability response through MiniMax-priority routing.
+- If MiniMax is unavailable, direct phrases like `what's on my calendar today?` should still work through the rule-based fallback.
+
+## 6. Test Google Calendar Through Telegram
 
 Send this Telegram message to the bot:
 
@@ -115,9 +120,9 @@ Expected result:
 
 This proves Telegram routing, OpenClaw Calendar access, and the availability service are connected.
 
-## 6. Test Gmail Notification
+## 7. Test Gmail Notification
 
-Send a controlled test email to `lmmagbuhos@oakdriveventures.com`.
+Send a controlled test email to the Google account connected in `/connect`.
 
 Example subject:
 
@@ -144,7 +149,7 @@ Expected result:
 
 Use `Ignore` on the first test email to prove a non-sending action.
 
-## 7. Test Gmail Mark Read
+## 8. Test Gmail Mark Read
 
 Send a second controlled test email.
 
@@ -159,7 +164,7 @@ Expected result:
 - Telegram callback answer says `Marked read`.
 - Gmail no longer shows the email as unread.
 
-## 8. Test Edited Gmail Reply
+## 9. Test Edited Gmail Reply
 
 Send a third controlled test email that asks for a reply.
 
@@ -180,7 +185,7 @@ Expected result:
 - The reply appears in the Gmail thread.
 - The reply is sent only after the explicit Telegram callback.
 
-## 9. Test Calendar Reminder Job
+## 10. Test Calendar Reminder Job
 
 Create a temporary Google Calendar event that starts about 30 minutes from now.
 
@@ -194,40 +199,11 @@ Expected result:
 Reminder: <event title> starts in 30 minutes
 ```
 
-## 10. Stop The Assistant
+## 11. Stop The Assistant
 
 Press `Ctrl+C` in the assistant terminal.
 
-## 11. Multiuser Migration and OAuth Onboarding Smoke
-
-If the deployment enables `MULTIUSER_ENABLED=true`, run these checks after the normal smoke test:
-
-1. Back up the current database:
-
-```bash
-cp "${SQLITE_DATABASE_PATH}" "${SQLITE_DATABASE_PATH}.backup"
-```
-
-2. Start the assistant with OAuth settings and a reachable `PUBLIC_BASE_URL`:
-
-```bash
-export PUBLIC_BASE_URL="https://your-public-domain.example.com"
-export GOOGLE_OAUTH_CLIENT_ID="..."
-export GOOGLE_OAUTH_CLIENT_SECRET="..."
-export TOKEN_ENCRYPTION_KEY="..."
-export MULTIUSER_ENABLED=true
-python -m personal_hermes --run
-```
-
-3. In Telegram, send `/connect`.
-   - The bot must return a Google authorization link.
-   - Complete the OAuth flow in your browser.
-   - Ensure Telegram receives **“Google connected.”**
-
-4. Send `/status`.
-   - You should see `Connected to Google as ...`.
-
-5. Confirm migration landed:
+## 12. Confirm Database Schema
 
 ```bash
 sqlite3 "$SQLITE_DATABASE_PATH" "PRAGMA user_version;"
@@ -237,11 +213,11 @@ sqlite3 "$SQLITE_DATABASE_PATH" "SELECT id, telegram_user_id, telegram_chat_id F
 
 Expected:
 
-- `user_version` is `2`.
+- `user_version` is `3`.
 - `seen_emails` shows a `user_id` column.
 
 ## Notes
 
 - Full email bodies should not be printed to logs by default.
 - If Telegram responds late, check the polling intervals in `.env`.
-- If Gmail or Calendar commands fail, first rerun `gog auth doctor --check` with `GOG_KEYRING_PASSWORD` loaded.
+- If Gmail or Calendar commands fail, confirm the Telegram user is connected with `/status`, then reconnect with `/connect` if needed.

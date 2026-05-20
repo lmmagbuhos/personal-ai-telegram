@@ -18,7 +18,13 @@ from personal_hermes.config import Settings
 from personal_hermes.oauth.crypto import TokenCipher
 from personal_hermes.oauth.google import GoogleOAuthConfig, GoogleOAuthService
 from personal_hermes.oauth.web import create_oauth_app
+from personal_hermes.llm.minimax import MiniMaxIntentClient
 from personal_hermes.mail.actions import MailActionService
+from personal_hermes.mail.gmail import (
+    GmailDraftService,
+    GmailMessageActionService,
+    GmailReadService,
+)
 from personal_hermes.mail.service import MailPollingService
 from personal_hermes.openclaw.client import CommandRunner, OpenClawClient
 from personal_hermes.router import AssistantRouter
@@ -43,6 +49,9 @@ class AppComponents:
     calendar_notifications: CalendarNotificationService
     mail_polling_service: MailPollingService
     mail_action_service: MailActionService
+    gmail_read_service: GmailReadService
+    gmail_message_action_service: GmailMessageActionService
+    gmail_draft_service: GmailDraftService
     router: AssistantRouter
     scheduler: AssistantScheduler
     oauth_service: GoogleOAuthService | None = None
@@ -206,12 +215,11 @@ def build_components(
     oauth_service = None
     oauth_app = None
     resolve_access_token = None
+    llm_intent_service = None
 
     openclaw_client = OpenClawClient(
         command_runner=command_runner,
         executable=settings.gog_executable,
-        account=settings.gog_account,
-        client=settings.gog_client,
     )
     telegram = TelegramAdapter(
         bot_token=settings.telegram_bot_token,
@@ -246,6 +254,15 @@ def build_components(
             telegram=telegram,
         )
 
+    if settings.llm_configured:
+        assert settings.minimax_api_key is not None
+        llm_intent_service = MiniMaxIntentClient(
+            api_key=settings.minimax_api_key,
+            model=settings.minimax_model,
+            base_url=settings.minimax_base_url,
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+
     calendar_service = CalendarService(
         openclaw_client=openclaw_client,
         timezone=ZoneInfo(settings.timezone),
@@ -265,6 +282,24 @@ def build_components(
         resolve_access_token=resolve_access_token,
     )
     mail_action_service = MailActionService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+        resolve_access_token=resolve_access_token,
+    )
+    gmail_read_service = GmailReadService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+        resolve_access_token=resolve_access_token,
+    )
+    gmail_message_action_service = GmailMessageActionService(
+        openclaw_client=openclaw_client,
+        telegram=telegram,
+        store=store,
+        resolve_access_token=resolve_access_token,
+    )
+    gmail_draft_service = GmailDraftService(
         openclaw_client=openclaw_client,
         telegram=telegram,
         store=store,
@@ -294,7 +329,11 @@ def build_components(
         oauth_session_ttl_minutes=settings.oauth_session_ttl_minutes,
         calendar_action_service=calendar_action_service,
         calendar_edit_service=calendar_edit_service,
+        gmail_read_service=gmail_read_service,
+        gmail_message_action_service=gmail_message_action_service,
+        gmail_draft_service=gmail_draft_service,
         timezone=ZoneInfo(settings.timezone),
+        llm_intent_service=llm_intent_service,
     )
     scheduler = AssistantScheduler(
         mail_polling_service=mail_polling_service,
@@ -306,7 +345,7 @@ def build_components(
         reminder_lead_minutes=settings.reminder_lead_minutes,
         telegram_poll_timeout_seconds=settings.telegram_poll_interval_seconds,
         resolve_access_token=resolve_access_token,
-        store=store if settings.multiuser_enabled else None,
+        store=store,
         multiuser_enabled=settings.multiuser_enabled,
         now_provider=now_provider,
     )
@@ -320,6 +359,9 @@ def build_components(
         calendar_notifications=calendar_notifications,
         mail_polling_service=mail_polling_service,
         mail_action_service=mail_action_service,
+        gmail_read_service=gmail_read_service,
+        gmail_message_action_service=gmail_message_action_service,
+        gmail_draft_service=gmail_draft_service,
         router=router,
         scheduler=scheduler,
         oauth_service=oauth_service,

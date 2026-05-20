@@ -71,10 +71,8 @@ TELEGRAM_AUTHORIZED_CHAT_ID=your-telegram-chat-id
 TELEGRAM_AUTHORIZED_USER_ID=your-telegram-user-id
 SQLITE_DATABASE_PATH=var/personal-hermes.sqlite3
 
-# OpenClaw (legacy single-user fallback)
+# OpenClaw executable used for per-user access-token commands
 GOG_EXECUTABLE=/home/claude-team/.local/bin/gog
-GOG_ACCOUNT=your-google-account@example.com
-GOG_CLIENT=default
 
 # Time & Work Schedule
 TIMEZONE=Asia/Manila
@@ -97,7 +95,7 @@ DEBUG_EMAIL_BODY_LOGGING=false
 # MULTI-USER OAUTH CONFIGURATION
 # ============================================================================
 
-# Enable multi-user mode (false = legacy single-user mode)
+# Multi-user mode is the only supported runtime mode
 MULTIUSER_ENABLED=true
 
 # Public domain where callback handler is accessible (HTTPS required)
@@ -158,7 +156,7 @@ Configuration OK
 
 ## Step 5: Database Initialization
 
-The `--check-config` command automatically initializes the SQLite database and applies schema migrations (v1 → v2):
+The `--check-config` command automatically initializes the SQLite database and applies schema migrations:
 
 ```bash
 python -m personal_hermes --check-config
@@ -168,7 +166,7 @@ python -m personal_hermes --check-config
 
 ```bash
 sqlite3 var/personal-hermes.sqlite3
-PRAGMA user_version;        -- Should output: 2
+PRAGMA user_version;        -- Should output: 3
 .tables                     -- Should show: users, oauth_sessions, google_accounts, ...
 .exit
 ```
@@ -181,11 +179,6 @@ Start the assistant with multi-user OAuth support:
 
 ```bash
 source .venv/bin/activate
-
-# Load GOG keyring password if using OpenClaw fallback
-set -a
-. /home/claude-team/.config/gogcli/keyring.env
-set +a
 
 # Start the assistant
 python -m personal_hermes --run
@@ -246,7 +239,7 @@ The output should show:
 
 ## Configuration Reference
 
-### Required (when MULTIUSER_ENABLED=true)
+### Required
 
 | Setting | Example | Notes |
 |---------|---------|-------|
@@ -328,7 +321,7 @@ The output should show:
 
 ## Next Steps
 
-- Review [smoke-test.md](./smoke-test.md) section 11 for full integration testing
+- Review [smoke-test.md](./smoke-test.md) for full integration testing
 - Monitor logs during initial user onboarding
 - Consider enabling per-user rate limiting (future enhancement)
 - Set up automated token rotation policy (future enhancement)

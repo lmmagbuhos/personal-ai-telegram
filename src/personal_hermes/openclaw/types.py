@@ -19,6 +19,18 @@ class EmailMessage:
 
 
 @dataclass(frozen=True)
+class GmailDraft:
+    id: str
+    message_id: str
+    thread_id: str
+    to: tuple[str, ...]
+    cc: tuple[str, ...]
+    bcc: tuple[str, ...]
+    subject: str
+    body_text: str
+
+
+@dataclass(frozen=True)
 class CalendarEvent:
     id: str
     title: str

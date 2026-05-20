@@ -1,8 +1,10 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
 from typing import Protocol
 
 from personal_hermes.calendar.service import AvailabilityResult
+from personal_hermes.llm.intents import LLMIntent, LLMIntentResult
 from personal_hermes.storage.store import StateStore
 from personal_hermes.telegram.adapter import format_availability_answer, format_schedule
 from personal_hermes.telegram.types import TelegramCallback, TelegramMessage
@@ -52,6 +54,11 @@ class RouterOAuthService(Protocol):
         ...
 
 
+class RouterLLMIntentService(Protocol):
+    def classify(self, text: str) -> LLMIntentResult:
+        ...
+
+
 class AssistantRouter:
     def __init__(
         self,
@@ -66,7 +73,11 @@ class AssistantRouter:
         oauth_session_ttl_minutes: int = 15,
         calendar_action_service=None,
         calendar_edit_service=None,
+        gmail_read_service=None,
+        gmail_message_action_service=None,
+        gmail_draft_service=None,
         timezone=None,
+        llm_intent_service=None,
     ) -> None:
         self.telegram = telegram
         self.calendar_service = calendar_service
@@ -78,7 +89,11 @@ class AssistantRouter:
         self.oauth_session_ttl_minutes = oauth_session_ttl_minutes
         self.calendar_action_service = calendar_action_service
         self.calendar_edit_service = calendar_edit_service
+        self.gmail_read_service = gmail_read_service
+        self.gmail_message_action_service = gmail_message_action_service
+        self.gmail_draft_service = gmail_draft_service
         self.timezone = timezone
+        self.llm_intent_service = llm_intent_service
 
     def handle_event(
         self,
@@ -100,6 +115,15 @@ class AssistantRouter:
             if self._handle_calendar_edit_value(event, user_id=None, now=now):
                 return
 
+            if self._handle_gmail_draft_value(event, user_id=None, now=now):
+                return
+
+            if self._handle_gmail_label_value(event, user_id=None, now=now):
+                return
+
+            if self._handle_llm_intent(event, user_id=None, now=now):
+                return
+
             if self._handle_cancel_event(event, user_id=None, now=now):
                 return
 
@@ -107,6 +131,12 @@ class AssistantRouter:
                 return
 
             if self._handle_create_event(event, user_id=None, now=now):
+                return
+
+            if self._handle_gmail_search(event, user_id=None, now=now):
+                return
+
+            if self._handle_gmail_compose(event, user_id=None, now=now):
                 return
 
             if _looks_like_availability_question(event.text):
@@ -151,6 +181,15 @@ class AssistantRouter:
         if self._handle_calendar_edit_value(event, user_id=user.id, now=now):
             return
 
+        if self._handle_gmail_draft_value(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_gmail_label_value(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_llm_intent(event, user_id=user.id, now=now):
+            return
+
         if self._handle_cancel_event(event, user_id=user.id, now=now):
             return
 
@@ -158,6 +197,12 @@ class AssistantRouter:
             return
 
         if self._handle_create_event(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_gmail_search(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_gmail_compose(event, user_id=user.id, now=now):
             return
 
         if _looks_like_availability_question(event.text):
@@ -351,6 +396,22 @@ class AssistantRouter:
             )
             return
 
+        if action == "mail_pick" and self.gmail_read_service is not None:
+            self.gmail_read_service.handle_callback(callback, user_id=user_id, now=now)
+            return
+
+        if action.startswith("mail_") and self.gmail_message_action_service is not None:
+            self.gmail_message_action_service.handle_callback(
+                callback,
+                user_id=user_id,
+                now=now,
+            )
+            return
+
+        if action.startswith("draft_") and self.gmail_draft_service is not None:
+            self.gmail_draft_service.handle_callback(callback, user_id=user_id, now=now)
+            return
+
         if action in ("cal_pick", "cal_del_ok", "cal_del_no", "cal_field", "cal_edit_ok", "cal_edit_no") and self.calendar_edit_service is not None:
             self.calendar_edit_service.handle_callback(callback, user_id=user_id, now=now)
             return
@@ -373,6 +434,98 @@ class AssistantRouter:
             # Backward-compatible fallback for callback handlers that do not yet
             # accept an explicit user_id argument.
             self.mail_action_service.handle_callback(callback, now=now)
+
+    def _handle_gmail_draft_value(self, event, *, user_id=None, now) -> bool:
+        if (
+            self.gmail_draft_service is None
+            or self.store is None
+            or not isinstance(event, TelegramMessage)
+        ):
+            return False
+        state = self.store.get_conversation_state(event.chat_id, user_id=user_id)
+        if state is None or state.state not in (
+            "gmail_compose_collect_to",
+            "gmail_compose_collect_subject",
+            "gmail_compose_collect_body",
+            "gmail_draft_edit_value",
+        ):
+            return False
+        return self.gmail_draft_service.handle_value(event, user_id=user_id, now=now)
+
+    def _handle_gmail_label_value(self, event, *, user_id=None, now) -> bool:
+        if (
+            self.gmail_message_action_service is None
+            or self.store is None
+            or not isinstance(event, TelegramMessage)
+        ):
+            return False
+        state = self.store.get_conversation_state(event.chat_id, user_id=user_id)
+        if state is None or state.state not in (
+            "gmail_label_value_add",
+            "gmail_label_value_remove",
+        ):
+            return False
+        return self.gmail_message_action_service.handle_value(event, user_id=user_id, now=now)
+
+    def _handle_gmail_search(self, event, *, user_id=None, now) -> bool:
+        if self.gmail_read_service is None or not isinstance(event, TelegramMessage):
+            return False
+        return self.gmail_read_service.start_search(event, user_id=user_id, now=now)
+
+    def _handle_gmail_compose(self, event, *, user_id=None, now) -> bool:
+        if self.gmail_draft_service is None or not isinstance(event, TelegramMessage):
+            return False
+        return self.gmail_draft_service.start_compose(event, user_id=user_id, now=now)
+
+    def _handle_llm_intent(self, event, *, user_id=None, now) -> bool:
+        if self.llm_intent_service is None or not isinstance(event, TelegramMessage):
+            return False
+        try:
+            result = self.llm_intent_service.classify(event.text)
+        except Exception:
+            return False
+        if result.intent == LLMIntent.UNKNOWN:
+            return False
+
+        normalized_text = result.normalized_text or event.text
+        normalized_event = replace(event, text=normalized_text)
+
+        if result.intent == LLMIntent.CALENDAR_READ:
+            schedules = self.calendar_service.schedule_for(
+                normalized_text,
+                today=now.date(),
+                user_id=user_id,
+            )
+            self.telegram.send_message(
+                chat_id=event.chat_id,
+                text=format_schedule(schedules, timezone=self.calendar_service.timezone),
+            )
+            return True
+        if result.intent == LLMIntent.CALENDAR_CREATE:
+            return self._handle_create_event(normalized_event, user_id=user_id, now=now)
+        if result.intent == LLMIntent.CALENDAR_EDIT:
+            if self.calendar_edit_service is None:
+                return False
+            return self.calendar_edit_service.start(
+                normalized_event,
+                operation="edit",
+                user_id=user_id,
+                now=now,
+            )
+        if result.intent == LLMIntent.CALENDAR_CANCEL:
+            if self.calendar_edit_service is None:
+                return False
+            return self.calendar_edit_service.start(
+                normalized_event,
+                operation="cancel",
+                user_id=user_id,
+                now=now,
+            )
+        if result.intent == LLMIntent.GMAIL_SEARCH:
+            return self._handle_gmail_search(normalized_event, user_id=user_id, now=now)
+        if result.intent == LLMIntent.GMAIL_COMPOSE:
+            return self._handle_gmail_compose(normalized_event, user_id=user_id, now=now)
+        return False
 
     def _handle_cancel_event(self, event, *, user_id=None, now) -> bool:
         if (self.calendar_edit_service is None or self.store is None

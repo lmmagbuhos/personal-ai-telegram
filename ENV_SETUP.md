@@ -2,9 +2,9 @@
 
 ## Quick Reference
 
-To enable multi-user OAuth mode, set these environment variables in `.env`:
+Personal Hermes now runs in multi-user OAuth mode only. Set these environment variables in `.env`:
 
-### Required (when MULTIUSER_ENABLED=true)
+### Required
 
 ```bash
 MULTIUSER_ENABLED=true
@@ -22,6 +22,8 @@ INVITED_TELEGRAM_USER_IDS=123456789,987654321
 OAUTH_SESSION_TTL_MINUTES=15
 OAUTH_HOST=0.0.0.0
 OAUTH_PORT=8080
+MINIMAX_API_KEY=your-minimax-api-key
+MINIMAX_MODEL=MiniMax-M2.7
 ```
 
 ---
@@ -89,16 +91,12 @@ GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX_AbCdEfGhIjKlMnOpQrStUv
 # TELEGRAM (Required)
 # ============================================================================
 TELEGRAM_BOT_TOKEN=replace-with-token
-TELEGRAM_AUTHORIZED_CHAT_ID=123456789
-TELEGRAM_AUTHORIZED_USER_ID=123456789
 SQLITE_DATABASE_PATH=var/personal-hermes.sqlite3
 
 # ============================================================================
-# OPENCLAW (Optional, for legacy single-user fallback)
+# OPENCLAW
 # ============================================================================
 GOG_EXECUTABLE=gog
-GOG_ACCOUNT=you@example.com
-GOG_CLIENT=default
 
 # ============================================================================
 # SCHEDULE & TIMING
@@ -120,7 +118,7 @@ PENDING_REPLY_EXPIRY_DAYS=7
 DEBUG_EMAIL_BODY_LOGGING=false
 
 # ============================================================================
-# MULTI-USER OAUTH - REQUIRED WHEN MULTIUSER_ENABLED=true
+# MULTI-USER OAUTH - REQUIRED
 # ============================================================================
 MULTIUSER_ENABLED=true
 
@@ -143,6 +141,30 @@ INVITED_TELEGRAM_USER_IDS=123456789,987654321
 OAUTH_SESSION_TTL_MINUTES=15
 OAUTH_HOST=0.0.0.0
 OAUTH_PORT=8080
+
+# ============================================================================
+# MINIMAX LLM ROUTING - OPTIONAL
+# ============================================================================
+MINIMAX_API_KEY=your-minimax-api-key
+MINIMAX_MODEL=MiniMax-M2.7
+MINIMAX_BASE_URL=https://api.minimax.io/v1
+LLM_TIMEOUT_SECONDS=10
+```
+
+---
+
+## MiniMax LLM Routing
+
+MiniMax is the priority natural-language parser. When `MINIMAX_API_KEY` is set,
+normal Telegram messages are classified by MiniMax first. If MiniMax fails,
+returns invalid JSON, or returns `unknown`, the existing rule-based parser is
+used as fallback.
+
+```bash
+MINIMAX_API_KEY=your-minimax-api-key
+MINIMAX_MODEL=MiniMax-M2.7
+MINIMAX_BASE_URL=https://api.minimax.io/v1
+LLM_TIMEOUT_SECONDS=10
 ```
 
 ---
@@ -151,12 +173,14 @@ OAUTH_PORT=8080
 
 | Error | Solution |
 |-------|----------|
-| `multiuser OAuth settings required when multiuser_enabled is true: public_base_url, ...` | Set all 4 required vars above |
+| `multiuser runtime is required; set MULTIUSER_ENABLED=true` | Remove `MULTIUSER_ENABLED=false` or set it to `true` |
+| `multiuser OAuth settings required: public_base_url, ...` | Set all 4 required vars above |
 | `PUBLIC_BASE_URL must be an absolute http(s) URL` | Must start with `https://` (not `http://`) |
 | `TOKEN_ENCRYPTION_KEY` is missing | Generate with Fernet command above |
 | `GOOGLE_OAUTH_CLIENT_ID` is missing | Get from Google Cloud Console |
 | `GOOGLE_OAUTH_REDIRECT_PATH must start with /` | Ensure value starts with `/` |
 | `INVITED_TELEGRAM_USER_IDS must be comma-separated integers` | Use format: `123,456,789` |
+| `MINIMAX_BASE_URL must be an absolute http(s) URL` | Use `https://api.minimax.io/v1` |
 
 ---
 

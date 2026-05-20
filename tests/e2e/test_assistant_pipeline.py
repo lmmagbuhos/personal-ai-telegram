@@ -2,10 +2,13 @@ from datetime import UTC, datetime, timedelta
 
 from personal_hermes.app import build_components
 from personal_hermes.config import Settings
+from personal_hermes.oauth.crypto import TokenCipher
+from personal_hermes.oauth.google import GOOGLE_OAUTH_SCOPES
 
 
 CHAT_ID = 123
 USER_ID = 456
+TOKEN_ENCRYPTION_KEY = "3Qi5g7pADYF_poHyUGd-I3gyoY0u1IsGgqnJcMy6LEw="
 
 
 class FakeTelegramGateway:
@@ -133,10 +136,12 @@ def make_settings(database_path) -> Settings:
         telegram_authorized_user_id=USER_ID,
         sqlite_database_path=str(database_path),
         gog_executable="gog",
-        gog_account="lmmagbuhos@oakdriveventures.com",
-        gog_client="default",
         timezone="UTC",
-        multiuser_enabled=False,
+        public_base_url="https://hermes.example.com",
+        google_oauth_client_id="client-id",
+        google_oauth_client_secret="client-secret",
+        token_encryption_key=TOKEN_ENCRYPTION_KEY,
+        invite_only=False,
     )
 
 
@@ -148,6 +153,25 @@ def make_components(tmp_path, *, now):
         telegram_gateway=telegram,
         command_runner=gog,
         now_provider=lambda: now,
+    )
+    user = components.store.upsert_user_from_telegram(
+        telegram_user_id=USER_ID,
+        telegram_chat_id=CHAT_ID,
+        display_name="Hermes User",
+        username="hermes",
+        now=now,
+    )
+    components.store.activate_user(user.id, now=now)
+    cipher = TokenCipher(TOKEN_ENCRYPTION_KEY)
+    components.store.save_google_account(
+        user_id=user.id,
+        google_subject="google-subject",
+        google_email="me@example.com",
+        encrypted_access_token=cipher.encrypt("user-token"),
+        encrypted_refresh_token=cipher.encrypt("refresh-token"),
+        granted_scopes=GOOGLE_OAUTH_SCOPES,
+        token_expires_at=now + timedelta(hours=1),
+        now=now,
     )
     return components, telegram, gog
 
@@ -161,7 +185,7 @@ def test_telegram_calendar_question_returns_availability_answer(tmp_path):
 
     assert len(telegram.sent_messages) == 1
     text = telegram.sent_messages[0]["text"]
-    assert "free:" in text or "No events" in text
+    assert "free:" in text or "No events" in text or "No schedule" in text
 
 
 def test_telegram_whats_on_calendar_uses_schedule_view(tmp_path):
@@ -188,10 +212,8 @@ def test_gmail_poll_to_telegram_notification_and_send_reply_callback(tmp_path):
         {
             "args": [
                 "gog",
-                "--account",
-                "lmmagbuhos@oakdriveventures.com",
-                "--client",
-                "default",
+                "--access-token",
+                "user-token",
                 "gmail",
                 "send",
                 "--thread-id",
@@ -246,6 +268,6 @@ def test_calendar_reminder_poll_sends_upcoming_event_notification(tmp_path):
 
 def _command_after_global_options(args):
     command = list(args[1:])
-    while command and command[0] in {"--account", "--client"}:
+    while command and command[0] in {"--account", "--client", "--access-token"}:
         command = command[2:]
     return command

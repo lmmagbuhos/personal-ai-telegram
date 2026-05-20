@@ -1,6 +1,6 @@
 # Personal Hermes
 
-Personal Hermes is a single-user Python assistant that uses Telegram as the chat surface and OpenClaw for Gmail and Google Calendar access.
+Personal Hermes is a multi-user Python assistant that uses Telegram as the chat surface, Google OAuth for per-user Gmail and Google Calendar access, and OpenClaw `gog` for Google API commands.
 
 ## Setup
 

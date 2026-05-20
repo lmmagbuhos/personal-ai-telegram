@@ -288,7 +288,69 @@ def test_initialize_migrates_legacy_single_user_schema(tmp_path):
         assert audit_row is not None and int(audit_row["user_id"]) == default_user_id
 
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
-        assert schema_version == 2
+        assert schema_version == 3
 
     assert store.has_seen_email("msg-legacy") is True
     assert store.get_pending_reply(1, now=now) is not None
+
+
+def test_initialize_rebuilds_legacy_conversation_state_for_multiuser_upsert(tmp_path):
+    database_path = tmp_path / "state.sqlite3"
+    now = datetime(2026, 5, 20, 8, 0, tzinfo=UTC)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER NOT NULL,
+                telegram_chat_id INTEGER NOT NULL,
+                display_name TEXT,
+                username TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (telegram_user_id, telegram_chat_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO users (
+                telegram_user_id,
+                telegram_chat_id,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, 'active', ?, ?)
+            """,
+            (111, 222, now.isoformat(), now.isoformat()),
+        )
+        connection.execute(
+            """
+            CREATE TABLE conversation_state (
+                telegram_chat_id INTEGER PRIMARY KEY,
+                state TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    store = StateStore(database_path)
+    store.initialize()
+    user = store.get_user_by_telegram(telegram_user_id=111, telegram_chat_id=222)
+    assert user is not None
+
+    store.set_conversation_state(
+        user_id=user.id,
+        telegram_chat_id=222,
+        state="cal_select",
+        payload={"op": "edit"},
+        updated_at=now,
+    )
+
+    state = store.get_conversation_state(222, user_id=user.id)
+    assert state is not None
+    assert state.state == "cal_select"

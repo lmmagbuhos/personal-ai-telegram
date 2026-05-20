@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from personal_hermes.openclaw.types import (
     CalendarEvent,
     EmailMessage,
+    GmailDraft,
     SendEmailReplyRequest,
 )
 
@@ -70,6 +71,82 @@ class OpenClawClient:
 
     def mark_email_read(self, email_id: str) -> None:
         self._run(self._mark_email_read_args(email_id))
+
+    def search_email_messages(
+        self,
+        query: str,
+        *,
+        max_results: int = 10,
+    ) -> list[EmailMessage]:
+        payload = self._run(self._search_email_args(query, max_results))
+        return [
+            self._map_email_message(item)
+            for item in self._items(payload, "messages")
+        ]
+
+    def archive_email(self, email_id: str) -> None:
+        self._run(self._archive_email_args(email_id))
+
+    def mark_email_unread(self, email_id: str) -> None:
+        self._run(self._mark_email_unread_args(email_id))
+
+    def trash_email(self, email_id: str) -> None:
+        self._run(self._trash_email_args(email_id))
+
+    def modify_email_labels(
+        self,
+        email_id: str,
+        *,
+        add: tuple[str, ...] = (),
+        remove: tuple[str, ...] = (),
+    ) -> None:
+        self._run(self._modify_email_labels_args(email_id, add=add, remove=remove))
+
+    def create_email_draft(
+        self,
+        *,
+        to: tuple[str, ...],
+        subject: str,
+        body_text: str,
+        cc: tuple[str, ...] = (),
+        bcc: tuple[str, ...] = (),
+    ) -> GmailDraft:
+        payload = self._run(
+            self._create_email_draft_args(to=to, subject=subject, cc=cc, bcc=bcc),
+            input_text=body_text,
+        )
+        return self._map_gmail_draft(payload, fallback_body_text=body_text)
+
+    def update_email_draft(
+        self,
+        draft_id: str,
+        *,
+        to: tuple[str, ...] | None = None,
+        subject: str | None = None,
+        body_text: str | None = None,
+        cc: tuple[str, ...] | None = None,
+        bcc: tuple[str, ...] | None = None,
+    ) -> GmailDraft:
+        payload = self._run(
+            self._update_email_draft_args(
+                draft_id,
+                to=to,
+                subject=subject,
+                cc=cc,
+                bcc=bcc,
+            ),
+            input_text=body_text or "",
+        )
+        return self._map_gmail_draft(payload, fallback_body_text=body_text or "")
+
+    def send_email_draft(self, draft_id: str) -> str:
+        payload = self._run(self._send_email_draft_args(draft_id))
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise OpenClawCommandError("gog draft send returned no sent message id")
+        return str(payload["id"])
+
+    def delete_email_draft(self, draft_id: str) -> None:
+        self._run(self._delete_email_draft_args(draft_id))
 
     def list_calendar_events(
         self, start_at: datetime, end_at: datetime
@@ -185,6 +262,129 @@ class OpenClawClient:
             email_id,
             "--json",
             "--no-input",
+        ]
+
+    def _search_email_args(self, query: str, max_results: int) -> list[str]:
+        return self._base_args() + [
+            "gmail",
+            "messages",
+            "search",
+            query,
+            "--json",
+            "--max",
+            str(max_results),
+            "--include-body",
+            "--body-format",
+            "text",
+            "--no-input",
+        ]
+
+    def _archive_email_args(self, email_id: str) -> list[str]:
+        return self._base_args() + ["gmail", "archive", email_id, "--json", "--no-input"]
+
+    def _mark_email_unread_args(self, email_id: str) -> list[str]:
+        return self._base_args() + ["gmail", "unread", email_id, "--json", "--no-input"]
+
+    def _trash_email_args(self, email_id: str) -> list[str]:
+        return self._base_args() + [
+            "gmail",
+            "trash",
+            email_id,
+            "--json",
+            "--no-input",
+            "-y",
+        ]
+
+    def _modify_email_labels_args(
+        self,
+        email_id: str,
+        *,
+        add: tuple[str, ...],
+        remove: tuple[str, ...],
+    ) -> list[str]:
+        args = self._base_args() + ["gmail", "messages", "modify", email_id]
+        if add:
+            args.extend(["--add", ",".join(add)])
+        if remove:
+            args.extend(["--remove", ",".join(remove)])
+        args.extend(["--json", "--no-input"])
+        return args
+
+    def _create_email_draft_args(
+        self,
+        *,
+        to: tuple[str, ...],
+        subject: str,
+        cc: tuple[str, ...],
+        bcc: tuple[str, ...],
+    ) -> list[str]:
+        args = self._base_args() + [
+            "gmail",
+            "drafts",
+            "create",
+            "--to",
+            ",".join(to),
+            "--subject",
+            subject,
+            "--body-file",
+            "-",
+            "--json",
+            "--no-input",
+        ]
+        if cc:
+            args.extend(["--cc", ",".join(cc)])
+        if bcc:
+            args.extend(["--bcc", ",".join(bcc)])
+        return args
+
+    def _update_email_draft_args(
+        self,
+        draft_id: str,
+        *,
+        to: tuple[str, ...] | None,
+        subject: str | None,
+        cc: tuple[str, ...] | None,
+        bcc: tuple[str, ...] | None,
+    ) -> list[str]:
+        args = self._base_args() + [
+            "gmail",
+            "drafts",
+            "update",
+            draft_id,
+            "--body-file",
+            "-",
+            "--json",
+            "--no-input",
+        ]
+        if to is not None:
+            args.extend(["--to", ",".join(to)])
+        if subject is not None:
+            args.extend(["--subject", subject])
+        if cc is not None:
+            args.extend(["--cc", ",".join(cc)])
+        if bcc is not None:
+            args.extend(["--bcc", ",".join(bcc)])
+        return args
+
+    def _send_email_draft_args(self, draft_id: str) -> list[str]:
+        return self._base_args() + [
+            "gmail",
+            "drafts",
+            "send",
+            draft_id,
+            "--json",
+            "--no-input",
+        ]
+
+    def _delete_email_draft_args(self, draft_id: str) -> list[str]:
+        return self._base_args() + [
+            "gmail",
+            "drafts",
+            "delete",
+            draft_id,
+            "--json",
+            "--no-input",
+            "-y",
         ]
 
     def _list_calendar_events_args(
@@ -324,6 +524,52 @@ class OpenClawClient:
             ),
             references=self._references_tuple(
                 self._first(payload, "references", default=())
+            ),
+        )
+
+    def _map_gmail_draft(
+        self,
+        payload: JsonValue,
+        *,
+        fallback_body_text: str,
+    ) -> GmailDraft:
+        if not isinstance(payload, dict):
+            raise OpenClawCommandError("gog draft returned a non-object JSON value")
+        draft = payload.get("draft", payload)
+        if not isinstance(draft, dict):
+            raise OpenClawCommandError("gog draft returned a malformed draft")
+        message = draft.get("message") if isinstance(draft.get("message"), dict) else {}
+        return GmailDraft(
+            id=str(self._first(draft, "id", "draft_id", "draftId", default="")),
+            message_id=str(
+                self._first(
+                    draft,
+                    "message_id",
+                    "messageId",
+                    default=self._first(message, "id", default=""),
+                )
+            ),
+            thread_id=str(
+                self._first(
+                    draft,
+                    "thread_id",
+                    "threadId",
+                    default=self._first(message, "thread_id", "threadId", default=""),
+                )
+            ),
+            to=self._string_tuple(self._first(draft, "to", default=())),
+            cc=self._string_tuple(self._first(draft, "cc", default=())),
+            bcc=self._string_tuple(self._first(draft, "bcc", default=())),
+            subject=str(self._first(draft, "subject", default="")),
+            body_text=str(
+                self._first(
+                    draft,
+                    "body_text",
+                    "bodyText",
+                    "body",
+                    "text",
+                    default=fallback_body_text,
+                )
             ),
         )
 

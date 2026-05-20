@@ -46,7 +46,7 @@ class ConversationState:
 
 
 class StateStore:
-    _CURRENT_SCHEMA_VERSION = 2
+    _CURRENT_SCHEMA_VERSION = 3
 
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
@@ -788,6 +788,7 @@ class StateStore:
             ):
                 self._add_user_id_column(connection, table)
 
+            self._rebuild_conversation_state_for_multiuser(connection)
             return
 
         if current_version == 1:
@@ -801,6 +802,11 @@ class StateStore:
             ):
                 self._add_user_id_column(connection, table)
 
+            self._rebuild_conversation_state_for_multiuser(connection)
+            return
+
+        if current_version == 2:
+            self._rebuild_conversation_state_for_multiuser(connection)
             return
 
     def _add_user_id_column(self, connection: sqlite3.Connection, table: str) -> None:
@@ -815,6 +821,54 @@ class StateStore:
             f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",
             (default_user_id,),
         )
+
+    def _rebuild_conversation_state_for_multiuser(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        table = "conversation_state"
+        if not self._table_exists(connection, table):
+            return
+        if not self._has_column(connection, table, "user_id"):
+            self._add_user_id_column(connection, table)
+        if self._has_unique_columns(connection, table, ("user_id", "telegram_chat_id")):
+            return
+
+        default_user_id = self._ensure_default_user(connection)
+        connection.execute("ALTER TABLE conversation_state RENAME TO conversation_state_old")
+        connection.execute(
+            """
+            CREATE TABLE conversation_state (
+                user_id INTEGER NOT NULL,
+                telegram_chat_id INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, telegram_chat_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO conversation_state (
+                user_id,
+                telegram_chat_id,
+                state,
+                payload_json,
+                updated_at
+            )
+            SELECT
+                COALESCE(user_id, ?),
+                telegram_chat_id,
+                state,
+                payload_json,
+                updated_at
+            FROM conversation_state_old
+            """,
+            (default_user_id,),
+        )
+        connection.execute("DROP TABLE conversation_state_old")
 
     def _get_schema_version(self, connection: sqlite3.Connection) -> int:
         row = connection.execute("PRAGMA user_version").fetchone()
@@ -843,6 +897,33 @@ class StateStore:
     def _has_column(self, connection: sqlite3.Connection, table_name: str, name: str) -> bool:
         rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
         return any(row["name"] == name for row in rows)
+
+    def _has_unique_columns(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_names: tuple[str, ...],
+    ) -> bool:
+        expected = set(column_names)
+        pk_columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table_name})")
+            if int(row["pk"]) > 0
+        }
+        if pk_columns == expected:
+            return True
+
+        for index in connection.execute(f"PRAGMA index_list({table_name})"):
+            if not int(index["unique"]):
+                continue
+            index_name = str(index["name"])
+            actual = {
+                str(row["name"])
+                for row in connection.execute(f"PRAGMA index_info({index_name})")
+            }
+            if actual == expected:
+                return True
+        return False
 
     def _resolve_user_id(self, user_id: int | None) -> int:
         if user_id is not None:

@@ -26,19 +26,6 @@ def make_settings(database_path: Path) -> Settings:
         gog_executable="gog",
         gog_account="lmmagbuhos@oakdriveventures.com",
         gog_client="default",
-        multiuser_enabled=False,
-    )
-
-
-def make_multiuser_settings(database_path: Path) -> Settings:
-    return Settings(
-        telegram_bot_token="telegram-token",
-        telegram_authorized_chat_id=123,
-        telegram_authorized_user_id=456,
-        sqlite_database_path=str(database_path),
-        gog_executable="gog",
-        gog_account="lmmagbuhos@oakdriveventures.com",
-        gog_client="default",
         multiuser_enabled=True,
         public_base_url="https://hermes.example.com",
         google_oauth_client_id="client-id",
@@ -87,32 +74,11 @@ def test_build_components_initializes_store_and_wires_scheduler(tmp_path):
     assert components.telegram.authorized_user_id == 456
     assert components.scheduler.authorized_chat_id == 123
     assert components.scheduler.telegram_poll_timeout_seconds == 2
-
-    components.scheduler.run_gmail_poll_job()
-
-    assert command_calls == [
-        (
-            [
-                "gog",
-                "--account",
-                "lmmagbuhos@oakdriveventures.com",
-                "--client",
-                "default",
-                "gmail",
-                "messages",
-                "search",
-                "in:inbox",
-                "--json",
-                "--max",
-                "25",
-                "--include-body",
-                "--body-format",
-                "text",
-                "--no-input",
-            ],
-            None,
-        )
-    ]
+    assert components.oauth_service is not None
+    assert components.oauth_app is not None
+    assert components.scheduler.multiuser_enabled is True
+    assert components.scheduler.store is components.store
+    assert command_calls == []
 
 
 def test_configure_job_schedule_registers_polling_and_daily_agenda_jobs(tmp_path):
@@ -139,8 +105,8 @@ def test_configure_job_schedule_registers_polling_and_daily_agenda_jobs(tmp_path
     assert job_scheduler.jobs[3][2]["minute"] == 0
 
 
-def test_build_components_wires_multiuser_oauth_runtime_dependencies(tmp_path):
-    settings = make_multiuser_settings(tmp_path / "assistant.sqlite3")
+def test_build_components_does_not_wire_legacy_gog_account_credentials(tmp_path):
+    settings = make_settings(tmp_path / "assistant.sqlite3")
     command_calls = []
 
     def fake_command_runner(args, *, input_text=None):
@@ -157,4 +123,56 @@ def test_build_components_wires_multiuser_oauth_runtime_dependencies(tmp_path):
     assert components.oauth_app is not None
     assert components.scheduler.multiuser_enabled is True
     assert components.scheduler.store is components.store
-    assert command_calls == []
+
+    authed_client = components.openclaw_client.with_access_token("user-token")
+    authed_client.search_email_messages("in:inbox", max_results=1)
+
+    assert command_calls == [
+        (
+            [
+                "gog",
+                "--access-token",
+                "user-token",
+                "gmail",
+                "messages",
+                "search",
+                "in:inbox",
+                "--json",
+                "--max",
+                "1",
+                "--include-body",
+                "--body-format",
+                "text",
+                "--no-input",
+            ],
+            None,
+        )
+    ]
+
+
+def test_build_components_wires_minimax_when_api_key_configured(tmp_path):
+    settings = make_settings(tmp_path / "assistant.sqlite3").model_copy(
+        update={"minimax_api_key": "secret"}
+    )
+
+    components = build_components(
+        settings,
+        telegram_gateway=FakeTelegramGateway(),
+        command_runner=lambda _args, input_text=None: {"messages": []},
+    )
+
+    assert components.router.llm_intent_service is not None
+
+
+def test_build_components_leaves_llm_unconfigured_without_api_key(tmp_path):
+    settings = make_settings(tmp_path / "assistant.sqlite3").model_copy(
+        update={"minimax_api_key": None}
+    )
+
+    components = build_components(
+        settings,
+        telegram_gateway=FakeTelegramGateway(),
+        command_runner=lambda _args, input_text=None: {"messages": []},
+    )
+
+    assert components.router.llm_intent_service is None

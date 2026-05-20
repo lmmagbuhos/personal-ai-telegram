@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     reminder_lead_minutes: PositiveInt = 30
     pending_reply_expiry_days: PositiveInt = 7
     debug_email_body_logging: bool = False
-    multiuser_enabled: bool = False
+    multiuser_enabled: bool = True
     public_base_url: str | None = None
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
@@ -40,12 +40,20 @@ class Settings(BaseSettings):
     oauth_session_ttl_minutes: PositiveInt = 15
     oauth_host: str = "127.0.0.1"
     oauth_port: TcpPort = 8080
+    minimax_api_key: str | None = None
+    minimax_model: str = "MiniMax-M2.7"
+    minimax_base_url: str = "https://api.minimax.io/v1"
+    llm_timeout_seconds: PositiveInt = 10
 
     @property
     def google_oauth_redirect_url(self) -> str | None:
         if not self.public_base_url:
             return None
         return self.public_base_url.rstrip("/") + self.google_oauth_redirect_path
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.minimax_api_key)
 
     @property
     def invited_telegram_user_ids_tuple(self) -> tuple[int, ...]:
@@ -57,22 +65,10 @@ class Settings(BaseSettings):
         return tuple(values)
 
     @model_validator(mode="after")
-    def validate_telegram_and_multiuser_settings(self) -> "Settings":
-        # Single-user mode requires Telegram authorization fields
+    def validate_multiuser_settings(self) -> "Settings":
         if not self.multiuser_enabled:
-            missing = []
-            if self.telegram_authorized_chat_id is None:
-                missing.append("telegram_authorized_chat_id")
-            if self.telegram_authorized_user_id is None:
-                missing.append("telegram_authorized_user_id")
-            if missing:
-                raise ValueError(
-                    "These fields are required in single-user mode: "
-                    + ", ".join(missing)
-                )
-            return self
+            raise ValueError("multiuser runtime is required; set MULTIUSER_ENABLED=true")
 
-        # Multi-user mode requires OAuth settings
         missing = [
             name
             for name in (
@@ -85,7 +81,7 @@ class Settings(BaseSettings):
         ]
         if missing:
             raise ValueError(
-                "multiuser OAuth settings required when multiuser_enabled is true: "
+                "multiuser OAuth settings required: "
                 + ", ".join(missing)
             )
         return self
@@ -100,6 +96,14 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("public_base_url must be an absolute http(s) URL")
         return value
+
+    @field_validator("minimax_base_url")
+    @classmethod
+    def validate_minimax_base_url(cls, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("minimax_base_url must be an absolute http(s) URL")
+        return value.rstrip("/")
 
     @field_validator("google_oauth_redirect_path")
     @classmethod

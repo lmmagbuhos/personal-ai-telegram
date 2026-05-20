@@ -5,6 +5,7 @@ from personal_hermes.openclaw.client import OpenClawClient
 from personal_hermes.openclaw.types import (
     CalendarEvent,
     EmailMessage,
+    GmailDraft,
     SendEmailReplyRequest,
 )
 
@@ -198,6 +199,162 @@ def test_mark_email_read_invokes_gog_command():
             ],
             None,
         )
+    ]
+
+
+def test_search_email_messages_invokes_gog_with_body_options():
+    runner = FakeCommandRunner([{"messages": [{"id": "msg-1", "subject": "Invoice"}]}])
+    client = OpenClawClient(command_runner=runner)
+
+    messages = client.search_email_messages("from:alex invoice", max_results=7)
+
+    assert [message.id for message in messages] == ["msg-1"]
+    assert runner.calls == [
+        (
+            [
+                "gog",
+                "gmail",
+                "messages",
+                "search",
+                "from:alex invoice",
+                "--json",
+                "--max",
+                "7",
+                "--include-body",
+                "--body-format",
+                "text",
+                "--no-input",
+            ],
+            None,
+        )
+    ]
+
+
+def test_gmail_message_action_wrappers_invoke_gog_commands():
+    runner = FakeCommandRunner([{"ok": True}, {"ok": True}, {"ok": True}, {"ok": True}])
+    client = OpenClawClient(command_runner=runner)
+
+    assert client.archive_email("msg-1") is None
+    assert client.mark_email_unread("msg-2") is None
+    assert client.trash_email("msg-3") is None
+    assert client.modify_email_labels("msg-4", add=("STARRED", "Work"), remove=("UNREAD",)) is None
+
+    assert runner.calls == [
+        (["gog", "gmail", "archive", "msg-1", "--json", "--no-input"], None),
+        (["gog", "gmail", "unread", "msg-2", "--json", "--no-input"], None),
+        (["gog", "gmail", "trash", "msg-3", "--json", "--no-input", "-y"], None),
+        (
+            [
+                "gog",
+                "gmail",
+                "messages",
+                "modify",
+                "msg-4",
+                "--add",
+                "STARRED,Work",
+                "--remove",
+                "UNREAD",
+                "--json",
+                "--no-input",
+            ],
+            None,
+        ),
+    ]
+
+
+def test_create_email_draft_invokes_gog_and_maps_enveloped_draft():
+    runner = FakeCommandRunner(
+        [
+            {
+                "draft": {
+                    "id": "draft-1",
+                    "message": {"id": "msg-1", "threadId": "thread-1"},
+                    "to": ["alex@example.com"],
+                    "cc": ["ops@example.com"],
+                    "bcc": [],
+                    "subject": "Hello",
+                    "body_text": "Body",
+                }
+            }
+        ]
+    )
+    client = OpenClawClient(command_runner=runner)
+
+    draft = client.create_email_draft(
+        to=("alex@example.com",),
+        cc=("ops@example.com",),
+        subject="Hello",
+        body_text="Body",
+    )
+
+    assert draft == GmailDraft(
+        id="draft-1",
+        message_id="msg-1",
+        thread_id="thread-1",
+        to=("alex@example.com",),
+        cc=("ops@example.com",),
+        bcc=(),
+        subject="Hello",
+        body_text="Body",
+    )
+    assert runner.calls == [
+        (
+            [
+                "gog",
+                "gmail",
+                "drafts",
+                "create",
+                "--to",
+                "alex@example.com",
+                "--subject",
+                "Hello",
+                "--body-file",
+                "-",
+                "--json",
+                "--no-input",
+                "--cc",
+                "ops@example.com",
+            ],
+            "Body",
+        )
+    ]
+
+
+def test_update_send_and_delete_email_draft_invoke_gog_commands():
+    runner = FakeCommandRunner(
+        [
+            {"id": "draft-1", "message_id": "msg-2", "thread_id": "thread-1", "subject": "New"},
+            {"id": "sent-msg-1"},
+            {"ok": True},
+        ]
+    )
+    client = OpenClawClient(command_runner=runner)
+
+    draft = client.update_email_draft("draft-1", subject="New", body_text="Updated")
+    sent_id = client.send_email_draft("draft-1")
+    assert client.delete_email_draft("draft-1") is None
+
+    assert draft.subject == "New"
+    assert sent_id == "sent-msg-1"
+    assert runner.calls == [
+        (
+            [
+                "gog",
+                "gmail",
+                "drafts",
+                "update",
+                "draft-1",
+                "--body-file",
+                "-",
+                "--json",
+                "--no-input",
+                "--subject",
+                "New",
+            ],
+            "Updated",
+        ),
+        (["gog", "gmail", "drafts", "send", "draft-1", "--json", "--no-input"], None),
+        (["gog", "gmail", "drafts", "delete", "draft-1", "--json", "--no-input", "-y"], None),
     ]
 
 
