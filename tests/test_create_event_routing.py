@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from personal_hermes.calendar.actions import CalendarActionService
+from personal_hermes.calendar.edit import CalendarEditService
 from personal_hermes.calendar.event_request import EventDraft
 from personal_hermes.router import AssistantRouter
 from personal_hermes.storage.store import StateStore
@@ -37,6 +38,8 @@ class FakeClient:
 
     def __init__(self):
         self.created = []
+        self.deleted = []
+        self._events = []
 
     def with_access_token(self, token):
         return self
@@ -48,6 +51,18 @@ class FakeClient:
             id = "evt1"
 
         return E()
+
+    def list_calendar_events(self, start, end):
+        """Return any events set via set_events."""
+        return self._events
+
+    def set_events(self, events):
+        """Set events to be returned by list_calendar_events."""
+        self._events = events
+
+    def delete_calendar_event(self, *, event_id):
+        """Record the deleted event id."""
+        self.deleted.append(event_id)
 
 
 class SimpleStub:
@@ -135,3 +150,118 @@ def test_create_event_routing_multiuser(tmp_path):
     assert end_at.hour == 9
     assert end_at.minute == 30
     assert timezone == "Asia/Manila"
+
+
+def test_cancel_event_routing_multiuser(tmp_path):
+    """Test that the router wires calendar event cancellation in multiuser mode."""
+    # 1. Build a real StateStore with an active user
+    store = StateStore(str(tmp_path / "t.sqlite3"))
+    store.initialize()
+
+    now = datetime(2026, 5, 20, 8, 0, tzinfo=UTC)
+    user = store.upsert_user_from_telegram(
+        telegram_user_id=1,
+        telegram_chat_id=2,
+        display_name=None,
+        username=None,
+        now=now,
+    )
+    # Activate the user so the multiuser path processes their messages
+    store.activate_user(user.id, now=now)
+
+    # 2. Build a CalendarEditService with fakes
+    tg = FakeTelegram()
+    client = FakeClient()
+
+    # Create a fake calendar event to list
+    class FakeEvent:
+        def __init__(self, event_id, title, start_at, end_at):
+            self.id = event_id
+            self.title = title
+            self.start_at = start_at
+            self.end_at = end_at
+
+    # Set up the client to return an event on the target date
+    event = FakeEvent(
+        "evt_to_cancel",
+        "Team Meeting",
+        datetime(2026, 5, 20, 10, 0, tzinfo=UTC),
+        datetime(2026, 5, 20, 11, 0, tzinfo=UTC),
+    )
+    client.set_events([event])
+
+    calendar_edit_service = CalendarEditService(
+        openclaw_client=client,
+        telegram=tg,
+        store=store,
+        timezone=TZ,
+        resolve_access_token=lambda user_id, *, now: "tok",
+    )
+
+    # 3. Build the AssistantRouter for multiuser mode
+    router = AssistantRouter(
+        telegram=tg,
+        calendar_service=SimpleStub(),  # Not needed for cancel path
+        mail_action_service=SimpleStub(),  # Not needed for cancel path
+        store=store,
+        oauth_service=object(),  # Non-None to enter multiuser branch
+        calendar_edit_service=calendar_edit_service,
+        timezone=TZ,
+    )
+
+    # 4. Send a message that looks like a cancel-event request
+    message = TelegramMessage(
+        chat_id=2,
+        user_id=1,
+        message_id=100,
+        text="cancel an event today",
+    )
+    router.handle_event(message, now=now)
+
+    # Assert: the fake telegram received a message with a cal_pick button
+    assert len(tg.sent_messages) == 1
+    sent = tg.sent_messages[0]
+    assert "cancel" in sent["text"].lower() or "event" in sent["text"].lower()
+    assert sent["buttons"] is not None
+    # Extract the callback data from the first button
+    buttons_flat = [btn for row in sent["buttons"] for btn in row]
+    pick_btn = buttons_flat[0]
+    assert isinstance(pick_btn, tuple)
+    assert pick_btn[1].startswith("cal_pick:")
+
+    # 5. Send the cal_pick callback to select the event
+    callback = TelegramCallback(
+        chat_id=2,
+        user_id=1,
+        message_id=100,
+        callback_query_id="q1",
+        data="cal_pick:0",
+    )
+    tg.sent_messages.clear()  # Clear prior messages
+    router.handle_event(callback, now=now)
+
+    # Assert: should now have confirmation buttons
+    # The service sends a message with cal_del_ok/cal_del_no buttons
+    assert len(tg.sent_messages) >= 1
+    sent_confirm = tg.sent_messages[-1]
+    assert sent_confirm["buttons"] is not None
+    buttons_flat = [btn for row in sent_confirm["buttons"] for btn in row]
+    del_ok_btn = next(
+        (btn for btn in buttons_flat if isinstance(btn, tuple) and btn[1] == "cal_del_ok"),
+        None,
+    )
+    assert del_ok_btn is not None
+
+    # 6. Send the cal_del_ok callback to confirm deletion
+    callback = TelegramCallback(
+        chat_id=2,
+        user_id=1,
+        message_id=101,
+        callback_query_id="q2",
+        data="cal_del_ok",
+    )
+    router.handle_event(callback, now=now)
+
+    # Assert: the fake client recorded the deleted event id
+    assert len(client.deleted) == 1
+    assert client.deleted[0] == "evt_to_cancel"

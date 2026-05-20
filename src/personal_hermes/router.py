@@ -65,6 +65,7 @@ class AssistantRouter:
         invited_telegram_user_ids: tuple[int, ...] = (),
         oauth_session_ttl_minutes: int = 15,
         calendar_action_service=None,
+        calendar_edit_service=None,
         timezone=None,
     ) -> None:
         self.telegram = telegram
@@ -76,6 +77,7 @@ class AssistantRouter:
         self.invited_telegram_user_ids = invited_telegram_user_ids
         self.oauth_session_ttl_minutes = oauth_session_ttl_minutes
         self.calendar_action_service = calendar_action_service
+        self.calendar_edit_service = calendar_edit_service
         self.timezone = timezone
 
     def handle_event(
@@ -93,6 +95,9 @@ class AssistantRouter:
                 return
 
             if self._handle_edit_flow_message(event, now=now):
+                return
+
+            if self._handle_cancel_event(event, user_id=None, now=now):
                 return
 
             if self._handle_create_event(event, user_id=None, now=now):
@@ -135,6 +140,9 @@ class AssistantRouter:
             return
 
         if self._handle_edit_flow_message(event, user_id=user.id, now=now):
+            return
+
+        if self._handle_cancel_event(event, user_id=user.id, now=now):
             return
 
         if self._handle_create_event(event, user_id=user.id, now=now):
@@ -331,6 +339,10 @@ class AssistantRouter:
             )
             return
 
+        if action in ("cal_pick", "cal_del_ok", "cal_del_no") and self.calendar_edit_service is not None:
+            self.calendar_edit_service.handle_callback(callback, user_id=user_id, now=now)
+            return
+
         if action in ("cal_confirm", "cal_cancel") and self.calendar_action_service is not None:
             self.calendar_action_service.handle_callback(callback, user_id=user_id, now=now)
             return
@@ -349,6 +361,16 @@ class AssistantRouter:
             # Backward-compatible fallback for callback handlers that do not yet
             # accept an explicit user_id argument.
             self.mail_action_service.handle_callback(callback, now=now)
+
+    def _handle_cancel_event(self, event, *, user_id=None, now) -> bool:
+        if (self.calendar_edit_service is None or self.store is None
+                or not isinstance(event, TelegramMessage)):
+            return False
+        lowered = event.text.lower()
+        if not (("cancel" in lowered or "delete" in lowered)
+                and ("event" in lowered or "meeting" in lowered or "appointment" in lowered)):
+            return False
+        return self.calendar_edit_service.start(event, operation="cancel", user_id=user_id, now=now)
 
     def _handle_create_event(self, event, *, user_id=None, now) -> bool:
         if (
