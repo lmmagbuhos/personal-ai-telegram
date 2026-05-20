@@ -86,7 +86,12 @@ class OpenClawClient:
         payload = self._run(self._create_calendar_event_args(title, start_at, end_at))
         if not isinstance(payload, dict):
             raise OpenClawCommandError("gog calendar create returned a non-object value")
-        return self._map_calendar_event(payload)
+        # gog wraps the created event under an "event" key; fall back to the payload
+        # itself for forward-compatibility if that envelope is ever absent.
+        event = payload.get("event", payload)
+        if not isinstance(event, dict):
+            raise OpenClawCommandError("gog calendar create returned a malformed event")
+        return self._map_calendar_event(event)
 
     def with_access_token(self, access_token: str | None) -> "OpenClawClient":
         return OpenClawClient(

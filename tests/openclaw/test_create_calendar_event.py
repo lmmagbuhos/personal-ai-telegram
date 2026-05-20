@@ -11,7 +11,10 @@ def test_create_calendar_event_builds_gog_args():
 
     def runner(args, *, input_text=None):
         captured["args"] = args
-        return {"id": "evt123", "htmlLink": "https://cal/evt123"}
+        return {"event": {"id": "evt123", "summary": "dentist",
+                          "start": {"dateTime": "2026-05-20T09:00:00+08:00", "timeZone": "Asia/Manila"},
+                          "end": {"dateTime": "2026-05-20T09:30:00+08:00", "timeZone": "Asia/Manila"},
+                          "htmlLink": "https://cal/evt123"}}
 
     client = OpenClawClient(command_runner=runner, executable="gog").with_access_token("tok")
     event = client.create_calendar_event(
