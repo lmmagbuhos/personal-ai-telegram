@@ -80,6 +80,14 @@ class OpenClawClient:
             for item in self._items(payload, "events")
         ]
 
+    def create_calendar_event(
+        self, *, title: str, start_at: datetime, end_at: datetime
+    ) -> CalendarEvent:
+        payload = self._run(self._create_calendar_event_args(title, start_at, end_at))
+        if not isinstance(payload, dict):
+            raise OpenClawCommandError("gog calendar create returned a non-object value")
+        return self._map_calendar_event(payload)
+
     def with_access_token(self, access_token: str | None) -> "OpenClawClient":
         return OpenClawClient(
             command_runner=self._command_runner,
@@ -169,6 +177,29 @@ class OpenClawClient:
             end_at.isoformat(),
             "--json",
             "--all-pages",
+            "--no-input",
+        ]
+
+    def _create_calendar_event_args(
+        self, title: str, start_at: datetime, end_at: datetime
+    ) -> list[str]:
+        tz = start_at.tzinfo
+        tz_name = getattr(tz, "key", None) or str(tz)
+        return self._base_args() + [
+            "calendar",
+            "create",
+            "primary",
+            "--summary",
+            title,
+            "--from",
+            start_at.isoformat(),
+            "--to",
+            end_at.isoformat(),
+            "--start-timezone",
+            tz_name,
+            "--end-timezone",
+            tz_name,
+            "--json",
             "--no-input",
         ]
 
