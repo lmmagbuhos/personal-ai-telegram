@@ -7,6 +7,8 @@ from personal_hermes.telegram.types import TelegramCallback, TelegramMessage
 
 
 class CalendarEditService:
+    _FIELD_LABELS = {"time": "time", "title": "title", "location": "location", "description": "description"}
+
     def __init__(self, *, openclaw_client, telegram, store: StateStore | None,
                  timezone: ZoneInfo, resolve_access_token=None) -> None:
         self.openclaw_client = openclaw_client
@@ -77,6 +79,8 @@ class CalendarEditService:
             self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
             self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text="Cancelled.")
             self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
+        elif action == "cal_field":
+            self._choose_field(callback, state, field=value, user_id=user_id, now=now)
         else:
             self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Unsupported action")
 
@@ -101,8 +105,23 @@ class CalendarEditService:
                 buttons=[[("Confirm cancel", "cal_del_ok"), ("Keep it", "cal_del_no")]],
             )
             self.telegram.answer_callback(callback_query_id=callback.callback_query_id)
-        else:
-            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Not supported yet")
+        else:  # op == "edit"
+            self.store.set_conversation_state(
+                user_id=user_id, telegram_chat_id=callback.chat_id,
+                state="cal_choose_field", payload={"op": "edit", "event": event}, updated_at=now,
+            )
+            self.telegram.edit_message(
+                chat_id=callback.chat_id, message_id=callback.message_id,
+                text=f"Editing '{event['title']}'. What do you want to change?",
+            )
+            self.telegram.send_message(
+                chat_id=callback.chat_id, text="Choose a field:",
+                buttons=[
+                    [("Time", "cal_field:time"), ("Title", "cal_field:title")],
+                    [("Location", "cal_field:location"), ("Description", "cal_field:description")],
+                ],
+            )
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id)
 
     def _delete(self, callback: TelegramCallback, state, *, user_id, now: datetime) -> None:
         event = state.payload.get("event")
@@ -123,6 +142,23 @@ class CalendarEditService:
         self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
         self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text=f"Cancelled '{event['title']}'.")
         self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
+
+    def _choose_field(self, callback: TelegramCallback, state, *, field, user_id, now: datetime) -> None:
+        event = state.payload.get("event")
+        if not event or field not in self._FIELD_LABELS:
+            self._answer_expired(callback)
+            return
+        self.store.set_conversation_state(
+            user_id=user_id, telegram_chat_id=callback.chat_id,
+            state="cal_edit_value", payload={"op": "edit", "event": event, "field": field},
+            updated_at=now,
+        )
+        self.telegram.send_message(
+            chat_id=callback.chat_id,
+            text=f"Send the new {self._FIELD_LABELS[field]}"
+                 + (" (e.g. `3pm` or `3-3:30pm`)." if field == "time" else "."),
+        )
+        self.telegram.answer_callback(callback_query_id=callback.callback_query_id)
 
     def _answer_expired(self, callback: TelegramCallback) -> None:
         self.telegram.answer_callback(

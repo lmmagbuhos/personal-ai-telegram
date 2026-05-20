@@ -114,3 +114,36 @@ def test_confirm_without_session_is_expired(tmp_path):
         resolve_access_token=lambda user_id, *, now: "tok", timezone=TZ)
     svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data="cal_del_ok"), user_id=uid, now=datetime.now(tz=UTC))
     assert any("expired" in (t or "").lower() for t in tg.answers)
+
+
+def _start_edit(tmp_path):
+    store = _store(tmp_path); uid = _uid(store)
+    tg = FakeTelegram()
+    client = FakeClient([_event("e1","Standup",9), _event("e2","Review",14)])
+    svc = CalendarEditService(openclaw_client=client, telegram=tg, store=store,
+        resolve_access_token=lambda user_id, *, now: "tok", timezone=TZ)
+    msg = TelegramMessage(chat_id=2, user_id=1, message_id=5, text="edit an event today")
+    svc.start(msg, operation="edit", user_id=uid, now=datetime.now(tz=UTC), today=date(2026,5,20))
+    return store, uid, tg, client, svc
+
+def test_edit_pick_shows_field_buttons(tmp_path):
+    store, uid, tg, client, svc = _start_edit(tmp_path)
+    now = datetime.now(tz=UTC)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data="cal_pick:1"), user_id=uid, now=now)
+    flat = [b for m in tg.messages for row in (m["buttons"] or []) for b in row]
+    cbs = [cb for _label, cb in flat]
+    assert "cal_field:time" in cbs and "cal_field:title" in cbs
+    assert "cal_field:location" in cbs and "cal_field:description" in cbs
+    state = store.get_conversation_state(2, user_id=uid)
+    assert state.state == "cal_choose_field"
+    assert state.payload["event"]["id"] == "e2"
+
+def test_edit_choose_field_prompts_for_value(tmp_path):
+    store, uid, tg, client, svc = _start_edit(tmp_path)
+    now = datetime.now(tz=UTC)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data="cal_pick:0"), user_id=uid, now=now)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=5,callback_query_id="q",data="cal_field:title"), user_id=uid, now=now)
+    state = store.get_conversation_state(2, user_id=uid)
+    assert state.state == "cal_edit_value"
+    assert state.payload["field"] == "title"
+    assert any("new title" in m["text"].lower() for m in tg.messages)
