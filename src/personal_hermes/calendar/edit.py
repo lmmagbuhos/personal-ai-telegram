@@ -82,6 +82,12 @@ class CalendarEditService:
             self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
         elif action == "cal_field":
             self._choose_field(callback, state, field=value, user_id=user_id, now=now)
+        elif action == "cal_edit_ok":
+            self._apply_edit(callback, state, user_id=user_id, now=now)
+        elif action == "cal_edit_no":
+            self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+            self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text="Edit cancelled.")
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
         else:
             self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Unsupported action")
 
@@ -143,6 +149,39 @@ class CalendarEditService:
         self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
         self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text=f"Cancelled '{event['title']}'.")
         self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Cancelled")
+
+    def _apply_edit(self, callback: TelegramCallback, state, *, user_id, now) -> None:
+        event = state.payload.get("event")
+        field = state.payload.get("field")
+        new_value = state.payload.get("new_value")
+        if not event or not field or new_value is None:
+            self._answer_expired(callback)
+            return
+        client = self._client_for_user(user_id, now=now)
+        if client is None:
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Connect Google first.")
+            return
+        kwargs = {"event_id": event["id"]}
+        if field == "time":
+            kwargs["start_at"] = datetime.fromisoformat(new_value["start"])
+            kwargs["end_at"] = datetime.fromisoformat(new_value["end"])
+            kwargs["timezone"] = getattr(self.timezone, "key", None) or str(self.timezone)
+        elif field == "title":
+            kwargs["summary"] = new_value["text"]
+        elif field == "location":
+            kwargs["location"] = new_value["text"]
+        elif field == "description":
+            kwargs["description"] = new_value["text"]
+        try:
+            client.update_calendar_event(**kwargs)
+        except Exception:
+            self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+            self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text="Couldn't update the event right now.")
+            self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Failed")
+            return
+        self.store.clear_conversation_state(callback.chat_id, user_id=user_id)
+        self.telegram.edit_message(chat_id=callback.chat_id, message_id=callback.message_id, text=f"Updated '{event['title']}'.")
+        self.telegram.answer_callback(callback_query_id=callback.callback_query_id, text="Updated")
 
     def _choose_field(self, callback: TelegramCallback, state, *, field, user_id, now: datetime) -> None:
         event = state.payload.get("event")

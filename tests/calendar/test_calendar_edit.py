@@ -27,12 +27,17 @@ class FakeClient:
     def __init__(self, events):
         self._events = events
         self.deleted = []
+        self.updated = []
     def with_access_token(self, token):
         return self
     def list_calendar_events(self, start_at, end_at):
         return self._events
     def delete_calendar_event(self, *, event_id):
         self.deleted.append(event_id)
+    def update_calendar_event(self, *, event_id, **fields):
+        self.updated.append((event_id, fields))
+        class E: id = event_id
+        return E()
 
 
 def _store(tmp_path):
@@ -188,3 +193,31 @@ def test_handle_value_unparseable_time_stays(tmp_path):
     state = store.get_conversation_state(2, user_id=uid)
     assert state.state == "cal_edit_value"
     assert any("couldn't read" in m["text"].lower() for m in tg.messages)
+
+
+def test_confirm_edit_title_updates(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "title")
+    now = datetime.now(tz=UTC)
+    svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="Sprint review"), user_id=uid, now=now)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=7,callback_query_id="q",data="cal_edit_ok"), user_id=uid, now=now)
+    assert client.updated and client.updated[0][0] == "e2"
+    assert client.updated[0][1].get("summary") == "Sprint review"
+    assert store.get_conversation_state(2, user_id=uid) is None
+
+def test_confirm_edit_time_updates_with_from_to(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "time")
+    now = datetime.now(tz=UTC)
+    svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="4-4:30pm"), user_id=uid, now=now)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=7,callback_query_id="q",data="cal_edit_ok"), user_id=uid, now=now)
+    eid, fields = client.updated[0]
+    assert eid == "e2"
+    assert fields.get("start_at") is not None and fields.get("end_at") is not None
+    assert fields.get("timezone") == "Asia/Manila"
+
+def test_cancel_edit_does_not_update(tmp_path):
+    store, uid, tg, client, svc = _to_value_step(tmp_path, "title")
+    now = datetime.now(tz=UTC)
+    svc.handle_value(TelegramMessage(chat_id=2,user_id=1,message_id=6,text="X"), user_id=uid, now=now)
+    svc.handle_callback(TelegramCallback(chat_id=2,user_id=1,message_id=7,callback_query_id="q",data="cal_edit_no"), user_id=uid, now=now)
+    assert client.updated == []
+    assert store.get_conversation_state(2, user_id=uid) is None
